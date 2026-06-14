@@ -22,6 +22,7 @@ except Exception:
 
 from voice_automation.config import (
     Config,
+    get_app_config_path,
     get_deepgram_api_key,
     load_config,
     save_config,
@@ -36,6 +37,7 @@ from voice_automation.downloader import (
     download_moonshine_model,
 )
 from voice_automation.service import VoiceAutomationService
+from voice_automation import __version__
 
 try:
     from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
@@ -252,6 +254,7 @@ class MainWindow(QMainWindow):
     download_requested = Signal(int)
     test_requested = Signal(Config)
     check_requested = Signal()
+    diagnostics_requested = Signal()
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -361,9 +364,12 @@ class MainWindow(QMainWindow):
         settings_button.clicked.connect(self._show_settings)
         check_button = QPushButton("Check Environment")
         check_button.clicked.connect(self.check_requested.emit)
+        diagnostics_button = QPushButton("Diagnostics")
+        diagnostics_button.clicked.connect(self.diagnostics_requested.emit)
         secondary_row = QHBoxLayout()
         secondary_row.addStretch(1)
         secondary_row.addWidget(check_button)
+        secondary_row.addWidget(diagnostics_button)
         secondary_row.addWidget(settings_button)
 
         layout.addStretch(1)
@@ -707,6 +713,7 @@ class DesktopApp(QObject):
         self.window.download_requested.connect(self.download_model)
         self.window.test_requested.connect(self.test_backend)
         self.window.check_requested.connect(self.check_environment)
+        self.window.diagnostics_requested.connect(self.show_diagnostics)
         self.status_changed.connect(self._set_status)
 
         self.tray = QSystemTrayIcon(icon, app)
@@ -731,6 +738,7 @@ class DesktopApp(QObject):
         home_action = QAction("Home", self)
         settings_action = QAction("Settings", self)
         check_action = QAction("Check Environment", self)
+        diagnostics_action = QAction("Diagnostics", self)
         quit_action = QAction("Quit", self)
 
         self.start_action.triggered.connect(self.start_service)
@@ -738,6 +746,7 @@ class DesktopApp(QObject):
         home_action.triggered.connect(self.window.show_home_page)
         settings_action.triggered.connect(self.window.show_settings_page)
         check_action.triggered.connect(self.check_environment)
+        diagnostics_action.triggered.connect(self.show_diagnostics)
         quit_action.triggered.connect(self.quit)
 
         menu.addAction(self.start_action)
@@ -746,6 +755,7 @@ class DesktopApp(QObject):
         menu.addAction(home_action)
         menu.addAction(settings_action)
         menu.addAction(check_action)
+        menu.addAction(diagnostics_action)
         menu.addSeparator()
         menu.addAction(quit_action)
         return menu
@@ -912,6 +922,13 @@ class DesktopApp(QObject):
         worker.signals.error.connect(lambda message: QMessageBox.warning(self.window, "Check Environment", message))
         self.thread_pool.start(worker)
 
+    def show_diagnostics(self) -> None:
+        QMessageBox.information(
+            self.window,
+            "Diagnostics",
+            self._build_diagnostics_text(),
+        )
+
     @Slot(Config)
     def test_backend(self, config: Config) -> None:
         if self.service.is_running or self._service_busy:
@@ -1028,6 +1045,41 @@ class DesktopApp(QObject):
 
     def _show_check_result(self, output: str) -> None:
         QMessageBox.information(self.window, "Check Environment", output)
+
+    def _build_diagnostics_text(self) -> str:
+        lines = [
+            f"Voice Automation {__version__}",
+            f"Status: {'running' if self.service.is_running else 'stopped'}",
+            f"Config: {get_app_config_path()}",
+            f"Backend: {self.config.model_provider}",
+            f"Hotkey: {self.config.hotkey}",
+            f"Sample rate: {self.config.sample_rate} Hz",
+            f"Max recording: {self.config.max_record_seconds} seconds",
+        ]
+        if self.config.model_provider == "deepgram":
+            lines.append(
+                "Deepgram key: saved"
+                if get_deepgram_api_key()
+                else "Deepgram key: missing"
+            )
+        else:
+            installed, message = is_moonshine_model_downloaded(
+                self.config.model_arch,
+                self.config.get_moonshine_cache_dir(),
+            )
+            lines.extend(
+                [
+                    f"Moonshine model: {self.config.model_arch}",
+                    f"Model storage: {self.config.get_moonshine_cache_dir() or get_default_moonshine_cache_dir()}",
+                    f"Model ready: {'yes' if installed else 'no'}",
+                    f"Model detail: {message}",
+                ]
+            )
+        if self._readiness_issues:
+            lines.append("")
+            lines.append("Setup issues:")
+            lines.extend(self._readiness_issues)
+        return "\n".join(lines)
 
     @staticmethod
     def _run_backend_test(config: Config) -> str:
