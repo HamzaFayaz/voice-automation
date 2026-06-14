@@ -62,6 +62,9 @@ for package in (
     except Exception:
         pass
 
+# Include assets directory (icon)
+datas += [("voice_automation/assets", "voice_automation/assets")]
+
 hiddenimports = sorted(set(hiddenimports))
 
 
@@ -99,7 +102,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon="voice_automation/assets/icon.ico",
 )
 
 coll = COLLECT(

@@ -16,7 +16,7 @@ _APP_NAME = "VoiceAutomation"
 _KEYRING_SERVICE = "voice-automation"
 _DEEPGRAM_KEY_NAME = "deepgram_api_key"
 
-VALID_MODEL_PROVIDERS = {"moonshine", "deepgram", "faster-whisper"}
+VALID_MODEL_PROVIDERS = {"moonshine", "deepgram"}
 VALID_MOONSHINE_ARCHES = {0, 1, 2, 3, 4, 5}
 VALID_PASTE_MODES = {"clipboard", "type"}
 VALID_HOTKEYS = {
@@ -38,7 +38,8 @@ class Config:
 
     model_provider: str = "moonshine"
     model_arch: int = 4
-    model_size: str = "base"
+    moonshine_cache_dir: str = ""
+    moonshine_model_dirs: dict[str, str] = dataclasses.field(default_factory=dict)
     deepgram_api_key: str = ""
 
     paste_mode: str = "type"
@@ -58,6 +59,10 @@ class Config:
             "cursor": "Cursor",
         }
     )
+
+    def get_moonshine_cache_dir(self) -> str:
+        """Return the configured cache directory for the selected Moonshine model."""
+        return self.moonshine_model_dirs.get(str(self.model_arch), self.moonshine_cache_dir)
 
 
 def get_project_config_path() -> Path:
@@ -205,7 +210,7 @@ def validate_config(config: Config, require_deepgram_key: bool = False) -> list[
 
     if config.model_provider not in VALID_MODEL_PROVIDERS:
         providers = ", ".join(sorted(VALID_MODEL_PROVIDERS))
-        errors.append(f"model_provider must be one of {providers}")
+        errors.append(f"model_provider must be one of: {providers}")
     if config.hotkey not in VALID_HOTKEYS:
         errors.append("hotkey is not supported")
     if config.sample_rate <= 0:

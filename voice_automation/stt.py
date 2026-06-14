@@ -1,14 +1,16 @@
 """Speech-to-text adapter module.
 
 Provides an abstract STT interface and concrete implementations for
-Moonshine and faster-whisper backends. Heavy dependencies are imported
-lazily so the module can be loaded even when a backend is not installed.
+the Deepgram cloud API and Moonshine local backends. Heavy dependencies
+are imported lazily so the module can be loaded even when a backend is
+not installed.
 """
 
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
@@ -101,10 +103,17 @@ class MoonshineSttAdapter(SttAdapter):
         ``moonshine_voice.Transcriber``.  Defaults to ``4`` (Small Streaming).
     """
 
-    def __init__(self, model_arch: int = 4) -> None:
+    def __init__(
+        self,
+        model_arch: int = 4,
+        sample_rate: int = 16000,
+        cache_dir: str = "",
+    ) -> None:
         self._model_arch: int = model_arch
+        self._sample_rate: int = sample_rate
+        self._cache_dir: str = cache_dir
         self._transcriber: Any = None  # moonshine_voice.Transcriber
-        self._stream_chunks: list[np.ndarray] = []
+        self._stream: Any = None  # moonshine_voice.Stream
         self._streaming: bool = False
         self._partial: str = ""
 
@@ -123,7 +132,11 @@ class MoonshineSttAdapter(SttAdapter):
 
         try:
             arch_enum = ModelArch(self._model_arch)
-            path, arch = get_model_for_language(wanted_model_arch=arch_enum)
+            cache_root = Path(self._cache_dir).expanduser() if self._cache_dir else None
+            path, arch = get_model_for_language(
+                wanted_model_arch=arch_enum,
+                cache_root=cache_root,
+            )
             self._transcriber = Transcriber(path, arch)
             logger.info(
                 "Moonshine model loaded from %s (arch=%s)", path, arch.name
@@ -143,8 +156,14 @@ class MoonshineSttAdapter(SttAdapter):
 
     def unload(self) -> None:
         """Release the transcriber."""
+        if self._stream is not None:
+            try:
+                self._stream.close()
+            except Exception:
+                logger.debug("Moonshine stream close failed", exc_info=True)
+            finally:
+                self._stream = None
         self._transcriber = None
-        self._stream_chunks.clear()
         self._streaming = False
         self._partial = ""
         logger.info("Moonshine model unloaded")
@@ -169,28 +188,31 @@ class MoonshineSttAdapter(SttAdapter):
         if not self.is_loaded():
             logger.error("Model not loaded – call load_model() first")
             return
-        self._stream_chunks.clear()
+        if self._stream is not None:
+            try:
+                self._stream.close()
+            except Exception:
+                logger.debug("Moonshine previous stream close failed", exc_info=True)
+        self._stream = self._transcriber.create_stream(update_interval=0.5)
+        self._stream.start()
         self._streaming = True
         self._partial = ""
-        logger.debug("Moonshine stream started")
+        logger.debug("Moonshine native stream started")
 
     def feed_chunk(self, chunk: np.ndarray) -> None:
         if not self._streaming:
             logger.warning("feed_chunk called outside a streaming session")
             return
-        self._stream_chunks.append(chunk)
-
-        # Attempt incremental transcription on accumulated audio so far.
+        if self._stream is None:
+            logger.warning("Moonshine stream is missing")
+            return
         try:
-            combined = np.concatenate(self._stream_chunks)
-            # Use 16 kHz as the default streaming sample rate.
-            transcript = self._transcriber.transcribe_without_streaming(combined.tolist(), 16000)
-            text = " ".join(line.text for line in transcript.lines)
-            self._partial = text.strip()
-        except Exception:
-            logger.debug(
-                "Partial transcription unavailable, will finalise on end_stream"
+            self._stream.add_audio(
+                chunk.astype(np.float32).tolist(),
+                self._sample_rate,
             )
+        except Exception:
+            logger.exception("Moonshine stream feed failed")
 
     def get_partial(self) -> str:
         return self._partial
@@ -201,15 +223,12 @@ class MoonshineSttAdapter(SttAdapter):
             return ""
         self._streaming = False
 
-        if not self._stream_chunks:
-            logger.debug("Stream ended with no audio chunks")
+        if self._stream is None:
+            logger.debug("Moonshine stream ended without stream object")
             return ""
 
-        combined = np.concatenate(self._stream_chunks)
-        self._stream_chunks.clear()
-
         try:
-            transcript = self._transcriber.transcribe_without_streaming(combined.tolist(), 16000)
+            transcript = self._stream.stop()
             result = " ".join(line.text for line in transcript.lines)
             self._partial = ""
             return result.strip()
@@ -217,127 +236,12 @@ class MoonshineSttAdapter(SttAdapter):
             logger.exception("Moonshine stream finalisation failed")
             self._partial = ""
             return ""
-
-
-# ---------------------------------------------------------------------------
-# faster-whisper implementation
-# ---------------------------------------------------------------------------
-
-class FasterWhisperSttAdapter(SttAdapter):
-    """STT adapter backed by *faster-whisper*.
-
-    Parameters
-    ----------
-    model_size:
-        Whisper model size string (e.g. ``"base"``, ``"small"``).
-    compute_type:
-        CTranslate2 compute type (default ``"int8"``).
-    """
-
-    def __init__(
-        self,
-        model_size: str = "base",
-        compute_type: str = "int8",
-    ) -> None:
-        self._model_size: str = model_size
-        self._compute_type: str = compute_type
-        self._model: Any = None  # faster_whisper.WhisperModel
-        self._stream_chunks: list[np.ndarray] = []
-        self._streaming: bool = False
-
-    # -- lifecycle -----------------------------------------------------------
-
-    def load_model(self) -> bool:
-        """Create the faster-whisper ``WhisperModel``."""
-        try:
-            from faster_whisper import WhisperModel  # lazy import
-        except ImportError:
-            logger.error(
-                "faster_whisper is not installed. "
-                "Install it with: pip install faster-whisper"
-            )
-            return False
-
-        try:
-            self._model = WhisperModel(
-                self._model_size,
-                device="cpu",
-                compute_type=self._compute_type,
-            )
-            logger.info(
-                "faster-whisper model loaded (size=%s, compute=%s)",
-                self._model_size,
-                self._compute_type,
-            )
-            return True
-        except Exception:
-            logger.exception("Failed to load faster-whisper model")
-            return False
-
-    def is_loaded(self) -> bool:
-        return self._model is not None
-
-    def unload(self) -> None:
-        self._model = None
-        self._stream_chunks.clear()
-        self._streaming = False
-        logger.info("faster-whisper model unloaded")
-
-    # -- batch ---------------------------------------------------------------
-
-    def transcribe(self, audio: np.ndarray, sample_rate: int) -> str:
-        if not self.is_loaded():
-            logger.error("Model not loaded – call load_model() first")
-            return ""
-        try:
-            segments, _info = self._model.transcribe(
-                audio,
-                beam_size=5,
-            )
-            text = " ".join(seg.text.strip() for seg in segments)
-            return text.strip()
-        except Exception:
-            logger.exception("faster-whisper batch transcription failed")
-            return ""
-
-    # -- streaming (accumulate + batch) --------------------------------------
-
-    def start_stream(self) -> None:
-        if not self.is_loaded():
-            logger.error("Model not loaded – call load_model() first")
-            return
-        self._stream_chunks.clear()
-        self._streaming = True
-        logger.debug("faster-whisper stream started (accumulate mode)")
-
-    def feed_chunk(self, chunk: np.ndarray) -> None:
-        if not self._streaming:
-            logger.warning("feed_chunk called outside a streaming session")
-            return
-        self._stream_chunks.append(chunk)
-
-    def get_partial(self) -> str:
-        """faster-whisper does not natively support streaming.
-
-        Returns an empty string; the final result is available after
-        ``end_stream()``.
-        """
-        return ""
-
-    def end_stream(self) -> str:
-        if not self._streaming:
-            logger.warning("end_stream called outside a streaming session")
-            return ""
-        self._streaming = False
-
-        if not self._stream_chunks:
-            logger.debug("Stream ended with no audio chunks")
-            return ""
-
-        combined = np.concatenate(self._stream_chunks)
-        self._stream_chunks.clear()
-
-        return self.transcribe(combined, 16000)
+        finally:
+            try:
+                self._stream.close()
+            except Exception:
+                logger.debug("Moonshine stream close failed", exc_info=True)
+            self._stream = None
 
 
 # ---------------------------------------------------------------------------
@@ -562,7 +466,6 @@ class DeepgramSttAdapter(SttAdapter):
 
 _PROVIDERS: dict[str, type[SttAdapter]] = {
     "moonshine": MoonshineSttAdapter,
-    "faster-whisper": FasterWhisperSttAdapter,
     "deepgram": DeepgramSttAdapter,
 }
 
@@ -573,7 +476,7 @@ def create_stt_adapter(provider: str, **kwargs: Any) -> SttAdapter:
     Parameters
     ----------
     provider:
-        One of ``"moonshine"``, ``"faster-whisper"``, or ``"deepgram"``.
+        One of ``"moonshine"`` or ``"deepgram"``.
     **kwargs:
         Forwarded to the adapter constructor.
 

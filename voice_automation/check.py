@@ -126,18 +126,6 @@ def _check_deepgram(cfg) -> bool:
         return False
 
 
-def _check_faster_whisper() -> bool:
-    """Import faster_whisper."""
-    _header("faster_whisper")
-    try:
-        import faster_whisper as _
-        print(f"{_PASS}  faster-whisper imported")
-        return True
-    except Exception as exc:
-        print(f"{_FAIL}  {exc}")
-        return False
-
-
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
@@ -165,9 +153,7 @@ def run_checks() -> bool:
     provider = cfg.model_provider
     if provider == "deepgram":
         results.append(_check_deepgram(cfg))
-    elif provider == "faster-whisper":
-        results.append(_check_faster_whisper())
-    else:  # default to moonshine
+    else:  # moonshine
         results.append(_check_moonshine())
         results.append(_check_model_files())
 

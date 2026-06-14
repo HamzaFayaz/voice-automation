@@ -13,13 +13,15 @@ dependencies = [
     "sounddevice",
     "pynput",
     "pyperclip",
-    "pyautogui",
     "numpy",
     "moonshine-voice",
+    "requests",
+    "filelock",
     "websockets",
     "PySide6",
     "keyring",
     "pyinstaller",
+    "pillow",
 ]
 
 [project.scripts]

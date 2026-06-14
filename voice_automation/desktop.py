@@ -7,9 +7,18 @@ import dataclasses
 import io
 import re
 import sys
+import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
+
+# Pre-import pynput BEFORE PySide6 to avoid a conflict where PySide6's
+# shiboken intercepts the `six` module and breaks pynput's import chain.
+try:
+    import pynput.keyboard  # noqa: F401
+except Exception:
+    pass
 
 from voice_automation.config import (
     Config,
@@ -19,7 +28,13 @@ from voice_automation.config import (
     set_deepgram_api_key,
     validate_config,
 )
-from voice_automation.downloader import ModelDownloadResult, download_moonshine_model
+from voice_automation.downloader import (
+    get_default_moonshine_cache_dir,
+    is_moonshine_model_downloaded,
+    ModelDownloadProgress,
+    ModelDownloadResult,
+    download_moonshine_model,
+)
 from voice_automation.service import VoiceAutomationService
 
 try:
@@ -28,6 +43,8 @@ try:
     from PySide6.QtWidgets import (
         QApplication,
         QComboBox,
+        QDialog,
+        QFileDialog,
         QFormLayout,
         QHBoxLayout,
         QLabel,
@@ -35,6 +52,7 @@ try:
         QMainWindow,
         QMenu,
         QMessageBox,
+        QProgressBar,
         QPushButton,
         QSizePolicy,
         QSpinBox,
@@ -80,6 +98,7 @@ class WorkerSignals(QObject):
 
     result = Signal(object)
     error = Signal(str)
+    progress = Signal(object)
     finished = Signal()
 
 
@@ -101,6 +120,129 @@ class FunctionWorker(QRunnable):
             self.signals.finished.emit()
 
 
+class ModelDownloadWorker(QRunnable):
+    """Run a cancellable model download on the Qt thread pool."""
+
+    def __init__(self, model_arch: int, cache_dir: str) -> None:
+        super().__init__()
+        self.model_arch = model_arch
+        self.cache_dir = cache_dir
+        self.cancel_event = threading.Event()
+        self.signals = WorkerSignals()
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = download_moonshine_model(
+                self.model_arch,
+                cache_dir=self.cache_dir,
+                cancel_event=self.cancel_event,
+                progress_callback=self.signals.progress.emit,
+            )
+            self.signals.result.emit(result)
+        except Exception as exc:
+            self.signals.error.emit(str(exc))
+        finally:
+            self.signals.finished.emit()
+
+
+class DownloadDialog(QDialog):
+    """Modal model-download progress dialog."""
+
+    minimize_requested = Signal()
+    cancel_requested = Signal()
+
+    def __init__(self, model_name: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Downloading Moonshine Model")
+        self.setModal(True)
+        self.setWindowModality(Qt.ApplicationModal)
+        self.setMinimumWidth(420)
+        self.setWindowFlag(Qt.WindowCloseButtonHint, False)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        self.title_label = QLabel(f"Downloading {model_name}")
+        self.title_label.setStyleSheet("font-size: 16px; font-weight: 700;")
+
+        self.detail_label = QLabel("Downloaded 0 files.")
+        self.detail_label.setWordWrap(True)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+
+        self.status_label = QLabel("Preparing download...")
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("color: #4b5563;")
+
+        self.minimize_button = QPushButton("Minimize Download")
+        self.minimize_button.clicked.connect(self.minimize_requested.emit)
+        self.cancel_button = QPushButton("Cancel Download")
+        self.cancel_button.clicked.connect(self._request_cancel)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        button_row.addWidget(self.minimize_button)
+        button_row.addWidget(self.cancel_button)
+
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.detail_label)
+        layout.addWidget(self.progress)
+        layout.addWidget(self.status_label)
+        layout.addLayout(button_row)
+
+    def update_progress(self, progress: ModelDownloadProgress) -> None:
+        self.detail_label.setText(
+            f"Downloaded {progress.completed_files} of {progress.total_files} files."
+        )
+        if progress.total_files:
+            current_fraction = 0.0
+            if progress.total_bytes:
+                current_fraction = min(
+                    progress.current_bytes / progress.total_bytes,
+                    1.0,
+                )
+            overall = (
+                (progress.completed_files + current_fraction)
+                / progress.total_files
+            )
+            self.progress.setValue(max(0, min(int(overall * 100), 100)))
+        if progress.current_file and progress.total_bytes:
+            mb_done = progress.current_bytes / (1024 * 1024)
+            mb_total = progress.total_bytes / (1024 * 1024)
+            self.status_label.setText(
+                f"{progress.status}: {mb_done:.1f} MB of {mb_total:.1f} MB"
+            )
+        elif progress.status:
+            self.status_label.setText(progress.status)
+
+    def _request_cancel(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Cancel Download",
+            "Cancel the current model download? Completed files will be kept, and the partial file will be removed safely.",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.cancel_button.setEnabled(False)
+        self.minimize_button.setEnabled(False)
+        self.status_label.setText("Cancelling download...")
+        self.cancel_requested.emit()
+
+    def mark_finished(self, message: str, success: bool) -> None:
+        self.progress.setRange(0, 1)
+        self.progress.setValue(1 if success else 0)
+        self.status_label.setText(message)
+        self.minimize_button.setEnabled(False)
+        self.cancel_button.setEnabled(False)
+
+
 class MainWindow(QMainWindow):
     """Main desktop window with Home and Settings pages."""
 
@@ -118,6 +260,7 @@ class MainWindow(QMainWindow):
 
         self._download_button: QPushButton | None = None
         self._download_status: QLabel | None = None
+        self._model_dirs: dict[str, str] = {}
 
         self.pages = QStackedWidget(self)
         self.home_page = self._build_home_page()
@@ -135,9 +278,17 @@ class MainWindow(QMainWindow):
         if status.startswith("error"):
             self.status_detail.setText(status)
         elif status == "running":
-            self.status_detail.setText("Hold the configured key to dictate.")
+            self.status_detail.setText(
+                f"Using {self._current_backend_summary()}. Hold the configured key to dictate."
+            )
         elif status == "recording":
-            self.status_detail.setText("Listening while the key is held.")
+            self.status_detail.setText(
+                f"Recording with {self._current_backend_summary()}."
+            )
+        elif status == "transcribing":
+            self.status_detail.setText(
+                f"Transcribing with {self._current_backend_summary()}."
+            )
         else:
             self.status_detail.setText(self._current_backend_summary())
 
@@ -255,11 +406,27 @@ class MainWindow(QMainWindow):
         model_layout.setContentsMargins(0, 0, 0, 0)
         self.model_combo = QComboBox()
         self.model_combo.addItems(MOONSHINE_MODELS.keys())
+        self.model_combo.currentTextChanged.connect(self._load_cache_path_for_selected_model)
         self._download_button = QPushButton("Download")
         self._download_button.clicked.connect(self._request_download)
         model_layout.addWidget(self.model_combo, 1)
         model_layout.addWidget(self._download_button)
         self.form.addRow("Moonshine Model", self.model_row)
+
+        self.cache_row = QWidget()
+        cache_layout = QHBoxLayout(self.cache_row)
+        cache_layout.setContentsMargins(0, 0, 0, 0)
+        self.cache_path = QLineEdit()
+        self.cache_path.setPlaceholderText("Moonshine model storage path")
+        self.cache_path.textChanged.connect(self._update_moonshine_model_status)
+        browse_cache_button = QPushButton("Browse")
+        browse_cache_button.clicked.connect(self._browse_moonshine_cache)
+        default_cache_button = QPushButton("Default")
+        default_cache_button.clicked.connect(self._use_default_moonshine_cache)
+        cache_layout.addWidget(self.cache_path, 1)
+        cache_layout.addWidget(browse_cache_button)
+        cache_layout.addWidget(default_cache_button)
+        self.form.addRow("Model Storage", self.cache_row)
 
         self.hotkey_combo = QComboBox()
         self.hotkey_combo.addItems(HOTKEYS)
@@ -302,7 +469,11 @@ class MainWindow(QMainWindow):
         )
         self.backend_combo.setCurrentText(backend_label)
         self._set_deepgram_key_saved(bool(get_deepgram_api_key()))
+        self._model_dirs = dict(config.moonshine_model_dirs)
+        if config.moonshine_cache_dir:
+            self._model_dirs.setdefault(str(config.model_arch), config.moonshine_cache_dir)
         self._set_combo_by_value(self.model_combo, MOONSHINE_MODELS, config.model_arch)
+        self._load_cache_path_for_selected_model()
         self.hotkey_combo.setCurrentText(config.hotkey)
         self.sample_rate.setValue(config.sample_rate)
         self.max_record_seconds.setValue(config.max_record_seconds)
@@ -313,6 +484,9 @@ class MainWindow(QMainWindow):
         config = load_config(use_app_data=True)
         config.model_provider = BACKENDS[self.backend_combo.currentText()]
         config.model_arch = MOONSHINE_MODELS[self.model_combo.currentText()]
+        config.moonshine_cache_dir = self.cache_path.text().strip()
+        self._model_dirs[str(config.model_arch)] = config.moonshine_cache_dir
+        config.moonshine_model_dirs = dict(self._model_dirs)
         config.hotkey = self.hotkey_combo.currentText()
         config.sample_rate = self.sample_rate.value()
         config.max_record_seconds = self.max_record_seconds.value()
@@ -358,6 +532,13 @@ class MainWindow(QMainWindow):
         self._show_home()
 
     def _request_download(self) -> None:
+        installed, message = is_moonshine_model_downloaded(
+            MOONSHINE_MODELS[self.model_combo.currentText()],
+            self.cache_path.text().strip(),
+        )
+        if installed:
+            self.show_download_result(message)
+            return
         self.download_requested.emit(MOONSHINE_MODELS[self.model_combo.currentText()])
 
     def _request_backend_test(self) -> None:
@@ -398,15 +579,50 @@ class MainWindow(QMainWindow):
         is_moonshine = BACKENDS[self.backend_combo.currentText()] == "moonshine"
         self.form.setRowVisible(self.deepgram_row, not is_moonshine)
         self.form.setRowVisible(self.model_row, is_moonshine)
+        self.form.setRowVisible(self.cache_row, is_moonshine)
         self.model_combo.setEnabled(is_moonshine)
-        if self._download_button is not None:
-            self._download_button.setEnabled(is_moonshine)
         if self._download_status is None:
             return
+        if is_moonshine:
+            self._update_moonshine_model_status()
+        else:
+            if self._download_button is not None:
+                self._download_button.setEnabled(False)
+            self._download_status.setText("Deepgram runs online and does not need a local model.")
+
+    def _browse_moonshine_cache(self) -> None:
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Choose Moonshine Model Storage",
+            self.cache_path.text().strip() or str(get_default_moonshine_cache_dir()),
+        )
+        if folder:
+            self.cache_path.setText(folder)
+
+    def _use_default_moonshine_cache(self) -> None:
+        self.cache_path.setText(str(get_default_moonshine_cache_dir()))
+
+    def _load_cache_path_for_selected_model(self) -> None:
+        model_arch = MOONSHINE_MODELS[self.model_combo.currentText()]
+        saved_path = self._model_dirs.get(str(model_arch), "")
+        self.cache_path.blockSignals(True)
+        self.cache_path.setText(saved_path or str(get_default_moonshine_cache_dir()))
+        self.cache_path.blockSignals(False)
+        self._update_moonshine_model_status()
+
+    def _update_moonshine_model_status(self) -> None:
+        if self._download_status is None or self._download_button is None:
+            return
+        if BACKENDS[self.backend_combo.currentText()] != "moonshine":
+            return
+        model_arch = MOONSHINE_MODELS[self.model_combo.currentText()]
+        cache_dir = self.cache_path.text().strip()
+        self._model_dirs[str(model_arch)] = cache_dir
+        installed, message = is_moonshine_model_downloaded(model_arch, cache_dir)
+        self._download_button.setEnabled(not installed)
+        self._download_button.setText("Downloaded" if installed else "Download")
         self._download_status.setText(
-            "Select a Moonshine model and download it before offline use."
-            if is_moonshine
-            else "Deepgram runs online and does not need a local model."
+            message if installed else f"Download required. {message}"
         )
 
     def _show_home(self) -> None:
@@ -430,8 +646,8 @@ class MainWindow(QMainWindow):
     def _current_backend_summary(self) -> str:
         provider = BACKENDS[self.backend_combo.currentText()]
         if provider == "deepgram":
-            return "Online backend: Deepgram"
-        return f"Offline backend: Moonshine {self.model_combo.currentText()}"
+            return "Deepgram online"
+        return f"Moonshine {self.model_combo.currentText()} local"
 
     @staticmethod
     def _set_combo_by_value(combo: QComboBox, mapping: dict[str, int], value: int) -> None:
@@ -453,8 +669,16 @@ class DesktopApp(QObject):
         self.config = self._load_desktop_config()
         self.service = VoiceAutomationService(self.config)
         self.service.on_status_change(self.status_changed.emit)
+        self.download_dialog: DownloadDialog | None = None
+        self.download_worker: ModelDownloadWorker | None = None
+        self._download_minimized = False
+        self._active_download_arch: int | None = None
+
+        icon = self._build_icon()
+        self.app.setWindowIcon(icon)
 
         self.window = MainWindow(self.config)
+        self.window.setWindowIcon(icon)
         self.window.start_requested.connect(self.start_service)
         self.window.stop_requested.connect(self.stop_service)
         self.window.config_saved.connect(self.apply_config)
@@ -463,7 +687,7 @@ class DesktopApp(QObject):
         self.window.check_requested.connect(self.check_environment)
         self.status_changed.connect(self._set_status)
 
-        self.tray = QSystemTrayIcon(self._build_icon(), app)
+        self.tray = QSystemTrayIcon(icon, app)
         self.tray.setToolTip("Voice Automation")
         self.tray.setContextMenu(self._build_menu())
         self.tray.activated.connect(self._on_tray_activated)
@@ -530,12 +754,97 @@ class DesktopApp(QObject):
 
     @Slot(int)
     def download_model(self, model_arch: int) -> None:
+        if self.download_dialog is not None:
+            self.window.show_download_result("A model download is already running.")
+            return
+
+        model_name = next(
+            (name for name, arch in MOONSHINE_MODELS.items() if arch == model_arch),
+            f"Model {model_arch}",
+        )
+        self._download_minimized = False
+        self.download_dialog = DownloadDialog(model_name, self.window)
+        self.download_dialog.minimize_requested.connect(self._minimize_download)
+        self.download_dialog.cancel_requested.connect(self._cancel_model_download)
+        self.download_dialog.show()
+
         self.window.set_download_busy(True)
-        worker = FunctionWorker(lambda: download_moonshine_model(model_arch))
-        worker.signals.result.connect(self.window.show_download_result)
-        worker.signals.error.connect(self.window.show_download_result)
+        worker = ModelDownloadWorker(model_arch, self.window.cache_path.text().strip())
+        self._active_download_arch = model_arch
+        self.download_worker = worker
+        worker.signals.progress.connect(self._update_model_download_progress)
+        worker.signals.result.connect(self._finish_model_download)
+        worker.signals.error.connect(self._finish_model_download)
         worker.signals.finished.connect(lambda: self.window.set_download_busy(False))
         self.thread_pool.start(worker)
+
+    def _minimize_download(self) -> None:
+        self._download_minimized = True
+        if self.download_dialog is not None:
+            self.download_dialog.hide()
+        self.window.setEnabled(False)
+        self.window.showMinimized()
+        self.tray.showMessage(
+            "Moonshine Download",
+            "Model download is running in the background.",
+            QSystemTrayIcon.Information,
+            3000,
+        )
+
+    def _cancel_model_download(self) -> None:
+        if self.download_worker is not None:
+            self.download_worker.cancel()
+
+    def _update_model_download_progress(self, progress: ModelDownloadProgress) -> None:
+        if self.download_dialog is not None:
+            self.download_dialog.update_progress(progress)
+
+    def _finish_model_download(self, result: ModelDownloadResult | str) -> None:
+        success = isinstance(result, ModelDownloadResult) and result.success
+        cancelled = isinstance(result, ModelDownloadResult) and result.cancelled
+        message = result.message if isinstance(result, ModelDownloadResult) else str(result)
+
+        if self.download_dialog is not None:
+            self.download_dialog.mark_finished(message, success)
+            if not self._download_minimized:
+                QMessageBox.information(
+                    self.download_dialog,
+                    (
+                        "Moonshine Download"
+                        if success
+                        else "Moonshine Download Cancelled"
+                        if cancelled
+                        else "Moonshine Download Failed"
+                    ),
+                    message,
+                )
+            self.download_dialog.close()
+            self.download_dialog = None
+
+        self.download_worker = None
+        if success and self._active_download_arch is not None:
+            self.window._model_dirs[str(self._active_download_arch)] = (
+                self.window.cache_path.text().strip()
+            )
+            config = self.window._current_config()
+            save_config(config, use_app_data=True)
+            self.apply_config(config)
+        self._active_download_arch = None
+        self.window.setEnabled(True)
+        self.window.show_download_result(result)
+        self.window._update_moonshine_model_status()
+        self.tray.showMessage(
+            (
+                "Moonshine Download Complete"
+                if success
+                else "Moonshine Download Cancelled"
+                if cancelled
+                else "Moonshine Download Failed"
+            ),
+            message,
+            QSystemTrayIcon.Information if success or cancelled else QSystemTrayIcon.Warning,
+            5000,
+        )
 
     def check_environment(self) -> None:
         worker = FunctionWorker(self._run_check)
@@ -586,6 +895,11 @@ class DesktopApp(QObject):
 
     @staticmethod
     def _build_icon() -> QIcon:
+        """Load the application icon from the assets directory, with a fallback."""
+        icon_path = Path(__file__).parent / "assets" / "icon.ico"
+        if icon_path.exists():
+            return QIcon(str(icon_path))
+        # Fallback: draw a simple icon programmatically
         pixmap = QPixmap(64, 64)
         pixmap.fill(Qt.transparent)
         painter = QPainter(pixmap)
@@ -634,10 +948,13 @@ class DesktopApp(QObject):
                 api_key=config.deepgram_api_key,
                 sample_rate=config.sample_rate,
             )
-        elif config.model_provider == "moonshine":
-            adapter = create_stt_adapter("moonshine", model_arch=config.model_arch)
-        else:
-            adapter = create_stt_adapter(config.model_provider, model_size=config.model_size)
+        else:  # moonshine
+            adapter = create_stt_adapter(
+                "moonshine",
+                model_arch=config.model_arch,
+                sample_rate=config.sample_rate,
+                cache_dir=config.get_moonshine_cache_dir(),
+            )
 
         try:
             if not adapter.load_model():
@@ -661,6 +978,13 @@ def _strip_ansi(text: str) -> str:
 
 def main() -> int:
     """Run the desktop application."""
+    if sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "VoiceAutomation.Desktop"
+        )
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 

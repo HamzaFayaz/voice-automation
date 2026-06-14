@@ -44,11 +44,15 @@ def _safe_print(*args: Any, **kwargs: Any) -> None:
 def _get_adapter_kwargs(provider: str, cfg: Config) -> dict:
     """Return constructor arguments for the specified provider."""
     if provider == "moonshine":
-        return {"model_arch": cfg.model_arch}
+        return {
+            "model_arch": cfg.model_arch,
+            "sample_rate": cfg.sample_rate,
+            "cache_dir": cfg.get_moonshine_cache_dir(),
+        }
     elif provider == "deepgram":
         return {"api_key": cfg.deepgram_api_key, "sample_rate": cfg.sample_rate}
     else:
-        return {"model_size": cfg.model_size, "compute_type": "int8"}
+        raise ValueError(f"Unknown provider: {provider!r}")
 
 
 def _load_model(cfg: Config) -> SttAdapter:
@@ -64,7 +68,7 @@ def _load_model(cfg: Config) -> SttAdapter:
         If **no** backend could be loaded.
     """
     primary = cfg.model_provider
-    fallback = "faster-whisper" if primary == "moonshine" else "moonshine"
+    fallback = "deepgram" if primary == "moonshine" else "moonshine"
 
     # ── primary attempt ───────────────────────────────────────────────
     logger.info("Loading STT model: provider=%s …", primary)
