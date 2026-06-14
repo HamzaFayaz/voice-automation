@@ -28,7 +28,7 @@ Voice Automation is designed as a lightweight system-wide dictation shortcut:
 
 The goal is not to replace the keyboard. The goal is to make common text-heavy actions faster.
 
-The project also shows the kind of engineering judgment recruiters tend to look for: clear system boundaries, latency-aware processing, explicit online/offline tradeoffs, and a desktop UI that behaves like a real product instead of a demo.
+The project is built with robust software engineering principles: clear system boundaries, latency-aware processing, explicit online/offline trade-offs, and a polished desktop UI that behaves like a production utility instead of a demo.
 
 ## Features
 
@@ -46,6 +46,26 @@ The project also shows the kind of engineering judgment recruiters tend to look 
 - Small overlay HUD for recording/transcription feedback.
 - Config-driven backend switching.
 - Diagnostics and environment checks for setup debugging.
+
+## Engineering Highlights
+
+* **Asynchronous Multi-Threaded Pipeline**: Engineered a non-blocking execution flow using Python threading and global thread pools (`QThreadPool`) to prevent OS hotkey lag and GUI freezes during concurrent microphone capture and STT processing.
+* **Quantized Local CPU Inference**: Integrated the **Moonshine** model family, optimizing inference latency on resource-constrained host machines (CPU-only execution, leveraging compressed parameters from 26M to 245M).
+* **OS-Level Credential Security**: Implemented secure credential storage for external APIs using the system keyring service (`keyring` wrapper for Windows Credential Manager) instead of plaintext configuration files.
+* **Abstract STT Adapter Interface**: Designed a decoupled, polymorphic adapter pattern (`SttAdapter`) allowing seamless runtime swaps between Deepgram cloud transcription and local Moonshine models.
+* **Regex-based Text Normalization**: Built a custom processing pipeline for token normalization, casing correction, and custom dictionary mappings to ensure high-accuracy insertion.
+
+## Inference & Performance Trade-offs
+
+The engine is profiled to run on CPU-only hosts alongside CPU-heavy IDEs (such as Cursor/VS Code) and terminals.
+
+| Model / Provider | Parameter Count | Mode | Typical RTF (Real-Time Factor) | Best Use Case |
+| :--- | :---: | :---: | :---: | :--- |
+| **Deepgram API** | *N/A (Cloud)* | Cloud Streaming | < 0.1 | High-accuracy technical prompt dictation (requires network) |
+| **Moonshine Tiny** | 26M | Local CPU | ~0.15 | Ultra-fast short commands, lowest CPU footprint |
+| **Moonshine Small** | 123M | Local CPU | ~0.35 | Normal conversational typing with balanced latency |
+| **Moonshine Medium** | 245M | Local CPU | ~0.60 | High-accuracy local typing, Urdu/Hindi translation |
+
 
 ## System Design
 
@@ -381,6 +401,7 @@ Build outputs are written under `build\` and `dist\`.
 voice_automation/
 +-- __main__.py        CLI entrypoint
 +-- orchestrator.py    Main runtime pipeline
++-- service.py         Engine daemon lifecycle manager
 +-- audio.py           Microphone recording
 +-- hotkey.py          Global push-to-talk listener
 +-- stt.py             Deepgram, Moonshine, and faster-whisper adapters
@@ -391,6 +412,7 @@ voice_automation/
 +-- check.py           Environment checks
 +-- downloader.py      Moonshine model downloader
 +-- config.py          Config and .env loading
++-- logger.py          Central logging configuration
 ```
 
 ## Engineering Notes
