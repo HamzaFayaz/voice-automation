@@ -26,7 +26,6 @@ try:
     from PySide6.QtWidgets import (
         QApplication,
         QComboBox,
-        QDialog,
         QFormLayout,
         QHBoxLayout,
         QLabel,
@@ -35,7 +34,9 @@ try:
         QMenu,
         QMessageBox,
         QPushButton,
+        QSizePolicy,
         QSpinBox,
+        QStackedWidget,
         QStatusBar,
         QSystemTrayIcon,
         QVBoxLayout,
@@ -46,8 +47,8 @@ except ImportError as exc:  # pragma: no cover - exercised by users without Qt.
 
 
 BACKENDS = {
-    "Deepgram API": "deepgram",
-    "Moonshine Local": "moonshine",
+    "Online - Deepgram": "deepgram",
+    "Offline - Moonshine": "moonshine",
 }
 
 MOONSHINE_MODELS = {
@@ -68,7 +69,8 @@ HOTKEYS = [
     *[f"f{i}" for i in range(1, 13)],
 ]
 
-PASTE_MODES = ["clipboard", "type"]
+DESKTOP_PASTE_MODE = "type"
+DESKTOP_DEFAULT_MAX_RECORD_SECONDS = 300
 
 
 class WorkerSignals(QObject):
@@ -97,96 +99,48 @@ class FunctionWorker(QRunnable):
             self.signals.finished.emit()
 
 
-class SettingsWindow(QMainWindow):
-    """Settings window for desktop configuration."""
+class MainWindow(QMainWindow):
+    """Main desktop window with Home and Settings pages."""
 
+    start_requested = Signal()
+    stop_requested = Signal()
     config_saved = Signal(Config)
     download_requested = Signal(int)
     check_requested = Signal()
 
     def __init__(self, config: Config) -> None:
         super().__init__()
-        self.setWindowTitle("Voice Automation Settings")
-        self.setMinimumWidth(480)
+        self.setWindowTitle("Voice Automation")
+        self.setMinimumSize(540, 430)
 
         self._download_button: QPushButton | None = None
         self._download_status: QLabel | None = None
-        self._status_label: QLabel | None = None
 
-        root = QWidget(self)
-        layout = QVBoxLayout(root)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
-
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignRight)
-
-        self.backend_combo = QComboBox()
-        self.backend_combo.addItems(BACKENDS.keys())
-        form.addRow("Backend", self.backend_combo)
-
-        key_row = QWidget()
-        key_layout = QHBoxLayout(key_row)
-        key_layout.setContentsMargins(0, 0, 0, 0)
-        self.deepgram_key = QLineEdit()
-        self.deepgram_key.setEchoMode(QLineEdit.Password)
-        self.deepgram_key.setPlaceholderText("Deepgram API key")
-        save_key_button = QPushButton("Save Key")
-        save_key_button.clicked.connect(self._save_deepgram_key)
-        key_layout.addWidget(self.deepgram_key, 1)
-        key_layout.addWidget(save_key_button)
-        form.addRow("Deepgram Key", key_row)
-
-        self.model_combo = QComboBox()
-        self.model_combo.addItems(MOONSHINE_MODELS.keys())
-        form.addRow("Moonshine Model", self.model_combo)
-
-        self.hotkey_combo = QComboBox()
-        self.hotkey_combo.addItems(HOTKEYS)
-        form.addRow("Hotkey", self.hotkey_combo)
-
-        self.paste_combo = QComboBox()
-        self.paste_combo.addItems(PASTE_MODES)
-        form.addRow("Paste Mode", self.paste_combo)
-
-        self.sample_rate = QSpinBox()
-        self.sample_rate.setRange(8000, 48000)
-        self.sample_rate.setSingleStep(1000)
-        form.addRow("Sample Rate", self.sample_rate)
-
-        layout.addLayout(form)
-
-        download_row = QHBoxLayout()
-        self._download_button = QPushButton("Download Moonshine Model")
-        self._download_button.clicked.connect(self._request_download)
-        self._download_status = QLabel("No local model download is required for Deepgram.")
-        self._download_status.setWordWrap(True)
-        download_row.addWidget(self._download_button)
-        download_row.addWidget(self._download_status, 1)
-        layout.addLayout(download_row)
-
-        action_row = QHBoxLayout()
-        save_button = QPushButton("Save / Apply")
-        save_button.clicked.connect(self._save_settings)
-        check_button = QPushButton("Check Environment")
-        check_button.clicked.connect(self.check_requested.emit)
-        action_row.addStretch(1)
-        action_row.addWidget(check_button)
-        action_row.addWidget(save_button)
-        layout.addLayout(action_row)
-
-        self._status_label = QLabel("Status: stopped")
-        layout.addWidget(self._status_label)
-
+        self.pages = QStackedWidget(self)
+        self.home_page = self._build_home_page()
+        self.settings_page = self._build_settings_page()
+        self.pages.addWidget(self.home_page)
+        self.pages.addWidget(self.settings_page)
+        self.setCentralWidget(self.pages)
         self.setStatusBar(QStatusBar())
-        self.setCentralWidget(root)
+
         self._load_config(config)
-        self.backend_combo.currentTextChanged.connect(self._sync_backend_visibility)
-        self._sync_backend_visibility()
+        self._show_home()
 
     def set_status(self, status: str) -> None:
-        if self._status_label is not None:
-            self._status_label.setText(f"Status: {status}")
+        self.status_label.setText(status.title())
+        if status.startswith("error"):
+            self.status_detail.setText(status)
+        elif status == "running":
+            self.status_detail.setText("Hold the configured key to dictate.")
+        elif status == "recording":
+            self.status_detail.setText("Listening while the key is held.")
+        else:
+            self.status_detail.setText(self._current_backend_summary())
+
+    def set_running(self, running: bool) -> None:
+        self.start_button.setEnabled(not running)
+        self.stop_button.setEnabled(running)
 
     def set_download_busy(self, busy: bool) -> None:
         if self._download_button is not None:
@@ -197,48 +151,184 @@ class SettingsWindow(QMainWindow):
     def show_download_result(self, result: ModelDownloadResult | str) -> None:
         if self._download_status is None:
             return
-        if isinstance(result, ModelDownloadResult):
-            self._download_status.setText(result.message)
-        else:
-            self._download_status.setText(result)
+        self._download_status.setText(result.message if isinstance(result, ModelDownloadResult) else result)
+
+    def _build_home_page(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(28, 28, 28, 28)
+        layout.setSpacing(18)
+
+        title = QLabel("Voice Automation")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size: 26px; font-weight: 700;")
+
+        self.status_label = QLabel("Stopped")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet("font-size: 40px; font-weight: 700; color: #1f7a5a;")
+
+        self.status_detail = QLabel("")
+        self.status_detail.setAlignment(Qt.AlignCenter)
+        self.status_detail.setWordWrap(True)
+        self.status_detail.setStyleSheet("font-size: 14px; color: #4b5563;")
+
+        button_row = QHBoxLayout()
+        self.start_button = QPushButton("Start")
+        self.stop_button = QPushButton("Stop")
+        self.start_button.setMinimumHeight(56)
+        self.stop_button.setMinimumHeight(56)
+        self.start_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.stop_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.start_button.clicked.connect(self.start_requested.emit)
+        self.stop_button.clicked.connect(self.stop_requested.emit)
+        button_row.addWidget(self.start_button)
+        button_row.addWidget(self.stop_button)
+
+        settings_button = QPushButton("Settings")
+        settings_button.clicked.connect(self._show_settings)
+        check_button = QPushButton("Check Environment")
+        check_button.clicked.connect(self.check_requested.emit)
+        secondary_row = QHBoxLayout()
+        secondary_row.addStretch(1)
+        secondary_row.addWidget(check_button)
+        secondary_row.addWidget(settings_button)
+
+        layout.addStretch(1)
+        layout.addWidget(title)
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.status_detail)
+        layout.addSpacing(10)
+        layout.addLayout(button_row)
+        layout.addLayout(secondary_row)
+        layout.addStretch(1)
+        return page
+
+    def _build_settings_page(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(12)
+
+        header_row = QHBoxLayout()
+        back_button = QPushButton("Back")
+        back_button.clicked.connect(self._show_home)
+        title = QLabel("Settings")
+        title.setStyleSheet("font-size: 22px; font-weight: 700;")
+        header_row.addWidget(back_button)
+        header_row.addWidget(title)
+        header_row.addStretch(1)
+        layout.addLayout(header_row)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItems(BACKENDS.keys())
+        self.backend_combo.currentTextChanged.connect(self._sync_backend_visibility)
+        form.addRow("Backend", self.backend_combo)
+
+        key_row = QWidget()
+        key_layout = QHBoxLayout(key_row)
+        key_layout.setContentsMargins(0, 0, 0, 0)
+        self.deepgram_key = QLineEdit()
+        self.deepgram_key.setEchoMode(QLineEdit.Password)
+        self.deepgram_key.setPlaceholderText("Deepgram API key")
+        save_key_button = QPushButton("Save")
+        save_key_button.clicked.connect(self._save_deepgram_key)
+        test_key_button = QPushButton("Test")
+        test_key_button.clicked.connect(self._test_deepgram_key)
+        key_layout.addWidget(self.deepgram_key, 1)
+        key_layout.addWidget(save_key_button)
+        key_layout.addWidget(test_key_button)
+        form.addRow("Deepgram Key", key_row)
+
+        model_row = QWidget()
+        model_layout = QHBoxLayout(model_row)
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(MOONSHINE_MODELS.keys())
+        self._download_button = QPushButton("Download")
+        self._download_button.clicked.connect(self._request_download)
+        model_layout.addWidget(self.model_combo, 1)
+        model_layout.addWidget(self._download_button)
+        form.addRow("Moonshine Model", model_row)
+
+        self.hotkey_combo = QComboBox()
+        self.hotkey_combo.addItems(HOTKEYS)
+        form.addRow("Hotkey", self.hotkey_combo)
+
+        self.sample_rate = QSpinBox()
+        self.sample_rate.setRange(8000, 48000)
+        self.sample_rate.setSingleStep(1000)
+        form.addRow("Sample Rate", self.sample_rate)
+
+        self.max_record_seconds = QSpinBox()
+        self.max_record_seconds.setRange(30, 1800)
+        self.max_record_seconds.setSingleStep(30)
+        self.max_record_seconds.setSuffix(" seconds")
+        form.addRow("Max Recording", self.max_record_seconds)
+
+        layout.addLayout(form)
+
+        self._download_status = QLabel("")
+        self._download_status.setWordWrap(True)
+        self._download_status.setStyleSheet("color: #4b5563;")
+        layout.addWidget(self._download_status)
+
+        action_row = QHBoxLayout()
+        save_button = QPushButton("Save")
+        save_button.clicked.connect(self._save_settings)
+        action_row.addStretch(1)
+        action_row.addWidget(save_button)
+        layout.addStretch(1)
+        layout.addLayout(action_row)
+        return page
 
     def _load_config(self, config: Config) -> None:
         backend_label = next(
             (label for label, provider in BACKENDS.items() if provider == config.model_provider),
-            "Moonshine Local",
+            "Online - Deepgram",
         )
         self.backend_combo.setCurrentText(backend_label)
         self.deepgram_key.setText(get_deepgram_api_key())
         self._set_combo_by_value(self.model_combo, MOONSHINE_MODELS, config.model_arch)
         self.hotkey_combo.setCurrentText(config.hotkey)
-        self.paste_combo.setCurrentText(config.paste_mode)
         self.sample_rate.setValue(config.sample_rate)
+        self.max_record_seconds.setValue(config.max_record_seconds)
+        self._sync_backend_visibility()
+        self.status_detail.setText(self._current_backend_summary())
 
     def _current_config(self) -> Config:
         config = load_config(use_app_data=True)
         config.model_provider = BACKENDS[self.backend_combo.currentText()]
         config.model_arch = MOONSHINE_MODELS[self.model_combo.currentText()]
         config.hotkey = self.hotkey_combo.currentText()
-        config.paste_mode = self.paste_combo.currentText()
         config.sample_rate = self.sample_rate.value()
+        config.max_record_seconds = self.max_record_seconds.value()
+        config.paste_mode = DESKTOP_PASTE_MODE
         config.deepgram_api_key = ""
         return config
 
-    def _save_deepgram_key(self) -> None:
+    def _save_deepgram_key(self) -> bool:
         try:
             set_deepgram_api_key(self.deepgram_key.text().strip())
         except RuntimeError as exc:
             QMessageBox.warning(self, "Deepgram Key", str(exc))
-            return
+            return False
         self.statusBar().showMessage("Deepgram key saved.", 3000)
+        return True
+
+    def _test_deepgram_key(self) -> None:
+        if not self._save_deepgram_key():
+            return
+        if get_deepgram_api_key():
+            QMessageBox.information(self, "Deepgram Key", "Deepgram key is saved.")
+        else:
+            QMessageBox.warning(self, "Deepgram Key", "Deepgram key is empty.")
 
     def _save_settings(self) -> None:
-        if self.deepgram_key.text().strip():
-            try:
-                set_deepgram_api_key(self.deepgram_key.text().strip())
-            except RuntimeError as exc:
-                QMessageBox.warning(self, "Deepgram Key", str(exc))
-                return
+        if self.deepgram_key.text().strip() and not self._save_deepgram_key():
+            return
 
         config = self._current_config()
         errors = validate_config(config, require_deepgram_key=config.model_provider == "deepgram")
@@ -248,6 +338,8 @@ class SettingsWindow(QMainWindow):
         save_config(config, use_app_data=True)
         self.config_saved.emit(config)
         self.statusBar().showMessage("Settings saved.", 3000)
+        self.status_detail.setText(self._current_backend_summary())
+        self._show_home()
 
     def _request_download(self) -> None:
         self.download_requested.emit(MOONSHINE_MODELS[self.model_combo.currentText()])
@@ -257,8 +349,37 @@ class SettingsWindow(QMainWindow):
         self.model_combo.setEnabled(is_moonshine)
         if self._download_button is not None:
             self._download_button.setEnabled(is_moonshine)
-        if self._download_status is not None and not is_moonshine:
-            self._download_status.setText("No local model download is required for Deepgram.")
+        if self._download_status is None:
+            return
+        self._download_status.setText(
+            "Select a Moonshine model and download it before offline use."
+            if is_moonshine
+            else "Deepgram runs online and does not need a local model."
+        )
+
+    def _show_home(self) -> None:
+        self.pages.setCurrentWidget(self.home_page)
+
+    def _show_settings(self) -> None:
+        self.pages.setCurrentWidget(self.settings_page)
+
+    def show_settings_page(self) -> None:
+        self._show_settings()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def show_home_page(self) -> None:
+        self._show_home()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _current_backend_summary(self) -> str:
+        provider = BACKENDS[self.backend_combo.currentText()]
+        if provider == "deepgram":
+            return "Online backend: Deepgram"
+        return f"Offline backend: Moonshine {self.model_combo.currentText()}"
 
     @staticmethod
     def _set_combo_by_value(combo: QComboBox, mapping: dict[str, int], value: int) -> None:
@@ -277,14 +398,16 @@ class DesktopApp(QObject):
         super().__init__()
         self.app = app
         self.thread_pool = QThreadPool.globalInstance()
-        self.config = load_config(use_app_data=True)
+        self.config = self._load_desktop_config()
         self.service = VoiceAutomationService(self.config)
         self.service.on_status_change(self.status_changed.emit)
 
-        self.settings_window = SettingsWindow(self.config)
-        self.settings_window.config_saved.connect(self.apply_config)
-        self.settings_window.download_requested.connect(self.download_model)
-        self.settings_window.check_requested.connect(self.check_environment)
+        self.window = MainWindow(self.config)
+        self.window.start_requested.connect(self.start_service)
+        self.window.stop_requested.connect(self.stop_service)
+        self.window.config_saved.connect(self.apply_config)
+        self.window.download_requested.connect(self.download_model)
+        self.window.check_requested.connect(self.check_environment)
         self.status_changed.connect(self._set_status)
 
         self.tray = QSystemTrayIcon(self._build_icon(), app)
@@ -293,7 +416,7 @@ class DesktopApp(QObject):
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
         self._set_status("stopped")
-        self.show_settings()
+        self.window.show_home_page()
         self.tray.showMessage(
             "Voice Automation",
             "Desktop app is running in the system tray.",
@@ -303,21 +426,24 @@ class DesktopApp(QObject):
 
     def _build_menu(self) -> QMenu:
         menu = QMenu()
-        self.start_action = QAction("Start Dictation", self)
-        self.stop_action = QAction("Stop Dictation", self)
+        self.start_action = QAction("Start", self)
+        self.stop_action = QAction("Stop", self)
+        home_action = QAction("Home", self)
         settings_action = QAction("Settings", self)
         check_action = QAction("Check Environment", self)
         quit_action = QAction("Quit", self)
 
         self.start_action.triggered.connect(self.start_service)
         self.stop_action.triggered.connect(self.stop_service)
-        settings_action.triggered.connect(self.show_settings)
+        home_action.triggered.connect(self.window.show_home_page)
+        settings_action.triggered.connect(self.window.show_settings_page)
         check_action.triggered.connect(self.check_environment)
         quit_action.triggered.connect(self.quit)
 
         menu.addAction(self.start_action)
         menu.addAction(self.stop_action)
         menu.addSeparator()
+        menu.addAction(home_action)
         menu.addAction(settings_action)
         menu.addAction(check_action)
         menu.addSeparator()
@@ -338,6 +464,7 @@ class DesktopApp(QObject):
 
     @Slot(Config)
     def apply_config(self, config: Config) -> None:
+        config.paste_mode = DESKTOP_PASTE_MODE
         self.config = dataclasses.replace(config)
         if self.service.is_running:
             worker = FunctionWorker(lambda: self.service.restart(self.config))
@@ -348,23 +475,18 @@ class DesktopApp(QObject):
 
     @Slot(int)
     def download_model(self, model_arch: int) -> None:
-        self.settings_window.set_download_busy(True)
+        self.window.set_download_busy(True)
         worker = FunctionWorker(lambda: download_moonshine_model(model_arch))
-        worker.signals.result.connect(self.settings_window.show_download_result)
-        worker.signals.error.connect(self.settings_window.show_download_result)
-        worker.signals.finished.connect(lambda: self.settings_window.set_download_busy(False))
+        worker.signals.result.connect(self.window.show_download_result)
+        worker.signals.error.connect(self.window.show_download_result)
+        worker.signals.finished.connect(lambda: self.window.set_download_busy(False))
         self.thread_pool.start(worker)
 
     def check_environment(self) -> None:
         worker = FunctionWorker(self._run_check)
         worker.signals.result.connect(self._show_check_result)
-        worker.signals.error.connect(lambda message: QMessageBox.warning(self.settings_window, "Check Environment", message))
+        worker.signals.error.connect(lambda message: QMessageBox.warning(self.window, "Check Environment", message))
         self.thread_pool.start(worker)
-
-    def show_settings(self) -> None:
-        self.settings_window.show()
-        self.settings_window.raise_()
-        self.settings_window.activateWindow()
 
     def quit(self) -> None:
         self.service.stop()
@@ -372,15 +494,30 @@ class DesktopApp(QObject):
         self.app.quit()
 
     def _set_status(self, status: str) -> None:
-        self.settings_window.set_status(status)
+        self.window.set_status(status)
         self.tray.setToolTip(f"Voice Automation - {status}")
         running = self.service.is_running
         self.start_action.setEnabled(not running)
         self.stop_action.setEnabled(running)
+        self.window.set_running(running)
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.DoubleClick:
-            self.show_settings()
+            self.window.show_home_page()
+
+    @staticmethod
+    def _load_desktop_config() -> Config:
+        config = load_config(use_app_data=True)
+        changed = False
+        if config.paste_mode != DESKTOP_PASTE_MODE:
+            config.paste_mode = DESKTOP_PASTE_MODE
+            changed = True
+        if config.max_record_seconds < DESKTOP_DEFAULT_MAX_RECORD_SECONDS:
+            config.max_record_seconds = DESKTOP_DEFAULT_MAX_RECORD_SECONDS
+            changed = True
+        if changed:
+            save_config(config, use_app_data=True)
+        return config
 
     @staticmethod
     def _build_icon() -> QIcon:
@@ -408,7 +545,7 @@ class DesktopApp(QObject):
         return result if passed else result + "\n\nOne or more checks failed."
 
     def _show_check_result(self, output: str) -> None:
-        QMessageBox.information(self.settings_window, "Check Environment", output)
+        QMessageBox.information(self.window, "Check Environment", output)
 
 
 def main() -> int:

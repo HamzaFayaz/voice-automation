@@ -41,11 +41,11 @@ class Config:
     model_size: str = "base"
     deepgram_api_key: str = ""
 
-    paste_mode: str = "clipboard"
+    paste_mode: str = "type"
     trailing_space: bool = True
     clipboard_restore_delay: float = 0.15
 
-    max_record_seconds: int = 30
+    max_record_seconds: int = 300
     min_record_seconds: float = 0.3
     sample_rate: int = 16_000
     chunk_ms: int = 100
