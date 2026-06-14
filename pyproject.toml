@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voice-automation"
+version = "0.1.0"
+description = "Voice automation tool for Windows – speak and type anywhere."
+requires-python = ">=3.11"
+license = {text = "MIT"}
+
+dependencies = [
+    "sounddevice",
+    "pynput",
+    "pyperclip",
+    "pyautogui",
+    "numpy",
+    "moonshine-voice",
+    "websockets",
+]
+
+[project.scripts]
+voice-automation = "voice_automation.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["voice_automation*"]

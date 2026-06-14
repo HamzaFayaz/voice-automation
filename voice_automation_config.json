@@ -1,0 +1,21 @@
+{
+    "hotkey": "right_ctrl",
+    "language": "en",
+    "model_provider": "deepgram",
+    "model_arch": 5,
+    "model_size": "base",
+    "deepgram_api_key": "",
+    "paste_mode": "clipboard",
+    "trailing_space": true,
+    "clipboard_restore_delay": 0.15,
+    "max_record_seconds": 30,
+    "min_record_seconds": 0.3,
+    "sample_rate": 8000,
+    "chunk_ms": 100,
+    "sound_cues": false,
+    "replacements": {
+        "jason": "JSON",
+        "python": "Python",
+        "cursor": "Cursor"
+    }
+}
