@@ -17,10 +17,13 @@ dependencies = [
     "numpy",
     "moonshine-voice",
     "websockets",
+    "PySide6",
+    "keyring",
 ]
 
 [project.scripts]
 voice-automation = "voice_automation.__main__:main"
+voice-automation-desktop = "voice_automation.desktop:main"
 
 [tool.setuptools.packages.find]
 include = ["voice_automation*"]
