@@ -1,0 +1,59 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Test, coverage, and type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Logs and runtime files
+*.log
+logs/
+
+# Local model/cache directories
+models/
+.models/
+model_cache/
+cache/
+.cache/
+
+# OS files
+Thumbs.db
+Desktop.ini
+
+# Editor and IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local agent/tool state
+.agent/
+.agents/
+.antigravitycli/
+.codex/
+
+# Internal planning notes
+automation.md
