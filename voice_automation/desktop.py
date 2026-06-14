@@ -63,6 +63,11 @@ try:
         QSystemTrayIcon,
         QVBoxLayout,
         QWidget,
+        QScrollArea,
+        QFrame,
+        QGroupBox,
+        QRadioButton,
+        QButtonGroup,
     )
 except ImportError as exc:  # pragma: no cover - exercised by users without Qt.
     raise SystemExit("PySide6 is required. Install it with: pip install PySide6") from exc
@@ -152,39 +157,41 @@ class ModelDownloadWorker(QRunnable):
 
 
 class DownloadDialog(QDialog):
-    """Modal model-download progress dialog."""
+    """Modal model-download progress dialog with background minimization support."""
 
     minimize_requested = Signal()
     cancel_requested = Signal()
 
     def __init__(self, model_name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Downloading Moonshine Model")
+        self.setWindowTitle("Downloading Model")
         self.setModal(True)
         self.setWindowModality(Qt.ApplicationModal)
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(440)
         self.setWindowFlag(Qt.WindowCloseButtonHint, False)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
 
         self.title_label = QLabel(f"Downloading {model_name}")
-        self.title_label.setStyleSheet("font-size: 16px; font-weight: 700;")
+        self.title_label.setStyleSheet("font-size: 16px; font-weight: 700; color: #ffffff;")
 
-        self.detail_label = QLabel("Downloaded 0 files.")
+        self.detail_label = QLabel("Initializing download...")
         self.detail_label.setWordWrap(True)
 
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
+        self.progress.setStyleSheet("QProgressBar { border: 1px solid #2d2d34; border-radius: 4px; text-align: center; } QProgressBar::chunk { background-color: #10b981; }")
 
         self.status_label = QLabel("Preparing download...")
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet("color: #4b5563;")
+        self.status_label.setStyleSheet("color: #a1a1aa;")
 
-        self.minimize_button = QPushButton("Minimize Download")
+        self.minimize_button = QPushButton("Minimize to Background")
         self.minimize_button.clicked.connect(self.minimize_requested.emit)
+        
         self.cancel_button = QPushButton("Cancel Download")
         self.cancel_button.clicked.connect(self._request_cancel)
 
@@ -228,7 +235,7 @@ class DownloadDialog(QDialog):
         answer = QMessageBox.question(
             self,
             "Cancel Download",
-            "Cancel the current model download? Completed files will be kept, and the partial file will be removed safely.",
+            "Are you sure you want to cancel the model download? Completed files will be preserved.",
         )
         if answer != QMessageBox.Yes:
             return
@@ -259,7 +266,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.setWindowTitle("Voice Automation")
-        self.setMinimumSize(540, 430)
+        self.setMinimumSize(560, 460)
 
         self._download_button: QPushButton | None = None
         self._download_status: QLabel | None = None
@@ -279,20 +286,25 @@ class MainWindow(QMainWindow):
     def set_status(self, status: str) -> None:
         self.status_label.setText(status.title())
         if status.startswith("error"):
+            self.status_label.setStyleSheet("font-size: 40px; font-weight: 700; color: #ef4444;")
             self.status_detail.setText(status)
         elif status == "running":
+            self.status_label.setStyleSheet("font-size: 40px; font-weight: 700; color: #10b981;")
             self.status_detail.setText(
                 f"Using {self._current_backend_summary()}. Hold the configured key to dictate."
             )
         elif status == "recording":
+            self.status_label.setStyleSheet("font-size: 40px; font-weight: 700; color: #3b82f6;")
             self.status_detail.setText(
                 f"Recording with {self._current_backend_summary()}."
             )
         elif status == "transcribing":
+            self.status_label.setStyleSheet("font-size: 40px; font-weight: 700; color: #f59e0b;")
             self.status_detail.setText(
                 f"Transcribing with {self._current_backend_summary()}."
             )
         else:
+            self.status_label.setStyleSheet("font-size: 40px; font-weight: 700; color: #71717a;")
             self.status_detail.setText(self._current_backend_summary())
 
     def set_running(self, running: bool) -> None:
@@ -313,9 +325,18 @@ class MainWindow(QMainWindow):
         self.readiness_label.setText("Setup required: " + " ".join(issues))
         self.start_button.setToolTip("Finish setup in Settings before starting dictation.")
 
-    def set_download_busy(self, busy: bool) -> None:
+    def set_download_busy(self, busy: bool, minimized: bool = False) -> None:
         if self._download_button is not None:
-            self._download_button.setEnabled(not busy)
+            if busy:
+                if minimized:
+                    self._download_button.setEnabled(True)
+                    self._download_button.setText("Show Progress")
+                else:
+                    self._download_button.setEnabled(False)
+                    self._download_button.setText("Downloading...")
+            else:
+                self._download_button.setEnabled(True)
+                self._download_button.setText("Download")
         if busy and self._download_status is not None:
             self._download_status.setText("Downloading...")
 
@@ -327,30 +348,32 @@ class MainWindow(QMainWindow):
     def _build_home_page(self) -> QWidget:
         page = QWidget(self)
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(28, 28, 28, 28)
-        layout.setSpacing(18)
+        layout.setContentsMargins(35, 35, 35, 35)
+        layout.setSpacing(20)
 
         title = QLabel("Voice Automation")
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("font-size: 26px; font-weight: 700;")
+        title.setStyleSheet("font-size: 26px; font-weight: 700; color: #ffffff;")
 
         self.status_label = QLabel("Stopped")
         self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet("font-size: 40px; font-weight: 700; color: #1f7a5a;")
+        self.status_label.setStyleSheet("font-size: 40px; font-weight: 700; color: #71717a;")
 
         self.status_detail = QLabel("")
         self.status_detail.setAlignment(Qt.AlignCenter)
         self.status_detail.setWordWrap(True)
-        self.status_detail.setStyleSheet("font-size: 14px; color: #4b5563;")
+        self.status_detail.setStyleSheet("font-size: 14px; color: #a1a1aa;")
 
         self.readiness_label = QLabel("")
         self.readiness_label.setAlignment(Qt.AlignCenter)
         self.readiness_label.setWordWrap(True)
-        self.readiness_label.setStyleSheet("font-size: 13px; color: #b45309;")
+        self.readiness_label.setStyleSheet("font-size: 13px; color: #f59e0b; font-weight: 500;")
 
         button_row = QHBoxLayout()
         self.start_button = QPushButton("Start")
         self.stop_button = QPushButton("Stop")
+        self.start_button.setProperty("class", "PrimaryButton")
+        self.stop_button.setProperty("class", "DangerButton")
         self.start_button.setMinimumHeight(56)
         self.stop_button.setMinimumHeight(56)
         self.start_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -366,6 +389,7 @@ class MainWindow(QMainWindow):
         check_button.clicked.connect(self.check_requested.emit)
         diagnostics_button = QPushButton("Diagnostics")
         diagnostics_button.clicked.connect(self.diagnostics_requested.emit)
+        
         secondary_row = QHBoxLayout()
         secondary_row.addStretch(1)
         secondary_row.addWidget(check_button)
@@ -377,7 +401,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.status_label)
         layout.addWidget(self.status_detail)
         layout.addWidget(self.readiness_label)
-        layout.addSpacing(10)
+        layout.addSpacing(15)
         layout.addLayout(button_row)
         layout.addLayout(secondary_row)
         layout.addStretch(1)
@@ -385,115 +409,298 @@ class MainWindow(QMainWindow):
 
     def _build_settings_page(self) -> QWidget:
         page = QWidget(self)
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(12)
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(0)
 
-        header_row = QHBoxLayout()
+        # Header bar
+        header_widget = QWidget()
+        header_widget.setObjectName("HeaderWidget")
+        header_widget.setStyleSheet("background-color: #1a1a1e; border-bottom: 1px solid #2d2d34;")
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(20, 12, 20, 12)
+        
         back_button = QPushButton("Back")
         back_button.clicked.connect(self._show_home)
+        
         title = QLabel("Settings")
-        title.setStyleSheet("font-size: 22px; font-weight: 700;")
-        header_row.addWidget(back_button)
-        header_row.addWidget(title)
-        header_row.addStretch(1)
-        layout.addLayout(header_row)
+        title.setStyleSheet("font-size: 20px; font-weight: 700; color: #ffffff;")
+        
+        header_layout.addWidget(back_button)
+        header_layout.addSpacing(15)
+        header_layout.addWidget(title)
+        header_layout.addStretch(1)
+        
+        page_layout.addWidget(header_widget)
 
-        self.form = QFormLayout()
-        self.form.setLabelAlignment(Qt.AlignRight)
+        # Scroll Area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setObjectName("SettingsScrollArea")
+        
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(20, 15, 20, 15)
+        scroll_layout.setSpacing(20)
 
-        self.backend_combo = QComboBox()
-        self.backend_combo.addItems(BACKENDS.keys())
-        self.backend_combo.currentTextChanged.connect(self._sync_backend_visibility)
-        self.form.addRow("Backend", self.backend_combo)
+        # 1. Backend Section
+        backend_group = self._build_backend_section()
+        scroll_layout.addWidget(backend_group)
 
-        self.deepgram_row = QWidget()
-        key_layout = QHBoxLayout(self.deepgram_row)
-        key_layout.setContentsMargins(0, 0, 0, 0)
+        # 2. Recording Section
+        recording_group = self._build_recording_section()
+        scroll_layout.addWidget(recording_group)
+
+        # 3. Advanced Section
+        advanced_group = self._build_advanced_section()
+        scroll_layout.addWidget(advanced_group)
+
+        # Save Settings Button at the bottom
+        bottom_row = QHBoxLayout()
+        save_button = QPushButton("Save Settings")
+        save_button.setProperty("class", "PrimaryButton")
+        save_button.setMinimumHeight(40)
+        save_button.clicked.connect(self._save_settings)
+        bottom_row.addStretch(1)
+        bottom_row.addWidget(save_button)
+        
+        scroll_layout.addLayout(bottom_row)
+        scroll.setWidget(scroll_content)
+        page_layout.addWidget(scroll)
+
+        return page
+
+    def _build_backend_section(self) -> QGroupBox:
+        group = QGroupBox("Speech Backend")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(12)
+
+        selector_layout = QHBoxLayout()
+        self.deepgram_radio = QRadioButton("Online - Deepgram API")
+        self.moonshine_radio = QRadioButton("Offline - Moonshine Local")
+        
+        self.backend_group = QButtonGroup(self)
+        self.backend_group.addButton(self.deepgram_radio)
+        self.backend_group.addButton(self.moonshine_radio)
+        
+        selector_layout.addWidget(self.deepgram_radio)
+        selector_layout.addWidget(self.moonshine_radio)
+        selector_layout.addStretch(1)
+
+        badge_layout = QHBoxLayout()
+        badge_label = QLabel("Readiness:")
+        self.backend_readiness_badge = QLabel("Unknown")
+        self.backend_readiness_badge.setObjectName("ReadinessBadge")
+        self.backend_readiness_badge.setProperty("class", "StatusBadge")
+        self.backend_readiness_badge.setStyleSheet(
+            "border-radius: 4px; padding: 4px 8px; font-weight: bold; background-color: #27272a; color: #a1a1aa;"
+        )
+        badge_layout.addWidget(badge_label)
+        badge_layout.addWidget(self.backend_readiness_badge)
+        badge_layout.addStretch(1)
+
+        self.deepgram_radio.toggled.connect(self._sync_backend_visibility)
+        self.moonshine_radio.toggled.connect(self._sync_backend_visibility)
+
+        self.backend_stack = QStackedWidget()
+        
+        self.deepgram_panel = self._build_deepgram_panel()
+        self.moonshine_panel = self._build_moonshine_panel()
+        
+        self.backend_stack.addWidget(self.deepgram_panel)
+        self.backend_stack.addWidget(self.moonshine_panel)
+
+        layout.addLayout(selector_layout)
+        layout.addLayout(badge_layout)
+        layout.addWidget(self.backend_stack)
+        
+        return group
+
+    def _build_deepgram_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 10, 0, 0)
+        
+        box = QFrame()
+        box.setObjectName("DeepgramBox")
+        box.setStyleSheet("background-color: #1a1a1e; border: 1px solid #2d2d34; border-radius: 6px;")
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(15, 15, 15, 15)
+        box_layout.setSpacing(12)
+        
+        status_row = QHBoxLayout()
         self.deepgram_key_status = QLabel("No API key saved.")
+        self.deepgram_key_status.setStyleSheet("font-weight: 500; color: #a1a1aa;")
+        status_row.addWidget(self.deepgram_key_status)
+        status_row.addStretch(1)
+        
+        input_row = QHBoxLayout()
         self.deepgram_key = QLineEdit()
         self.deepgram_key.setEchoMode(QLineEdit.Password)
-        self.deepgram_key.setPlaceholderText("Deepgram API key")
-        self.save_key_button = QPushButton("Save")
+        self.deepgram_key.setPlaceholderText("Paste your Deepgram API Key here")
+        self.deepgram_key.setMinimumHeight(32)
+        
+        self.save_key_button = QPushButton("Save Key")
         self.save_key_button.clicked.connect(self._save_deepgram_key)
-        self.change_key_button = QPushButton("Change API Key")
+        
+        self.change_key_button = QPushButton("Change Key")
         self.change_key_button.clicked.connect(self._edit_deepgram_key)
-        test_key_button = QPushButton("Test")
-        test_key_button.clicked.connect(self._test_deepgram_key)
-        key_layout.addWidget(self.deepgram_key_status)
-        key_layout.addWidget(self.deepgram_key, 1)
-        key_layout.addWidget(self.save_key_button)
-        key_layout.addWidget(self.change_key_button)
-        key_layout.addWidget(test_key_button)
-        self.form.addRow("Deepgram Key", self.deepgram_row)
+        
+        input_row.addWidget(self.deepgram_key, 1)
+        input_row.addWidget(self.save_key_button)
+        input_row.addWidget(self.change_key_button)
+        
+        action_row = QHBoxLayout()
+        test_backend_button = QPushButton("Test Deepgram Backend")
+        test_backend_button.clicked.connect(self._request_backend_test)
+        
+        info_label = QLabel(
+            "Deepgram requires a cloud API key. Your key is stored securely in the Windows Credential Manager."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #71717a; font-size: 11px;")
+        
+        action_row.addWidget(test_backend_button)
+        action_row.addStretch(1)
+        
+        box_layout.addLayout(status_row)
+        box_layout.addLayout(input_row)
+        box_layout.addLayout(action_row)
+        box_layout.addWidget(info_label)
+        
+        layout.addWidget(box)
+        return panel
 
-        self.model_row = QWidget()
-        model_layout = QHBoxLayout(self.model_row)
-        model_layout.setContentsMargins(0, 0, 0, 0)
+    def _build_moonshine_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 10, 0, 0)
+        
+        box = QFrame()
+        box.setStyleSheet("background-color: #1a1a1e; border: 1px solid #2d2d34; border-radius: 6px;")
+        box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(15, 15, 15, 15)
+        box_layout.setSpacing(12)
+        
+        form_layout = QFormLayout()
+        form_layout.setLabelAlignment(Qt.AlignRight)
+        
         self.model_combo = QComboBox()
         self.model_combo.addItems(MOONSHINE_MODELS.keys())
         self.model_combo.currentTextChanged.connect(self._load_cache_path_for_selected_model)
-        self._download_button = QPushButton("Download")
-        self._download_button.clicked.connect(self._request_download)
-        model_layout.addWidget(self.model_combo, 1)
-        model_layout.addWidget(self._download_button)
-        self.form.addRow("Moonshine Model", self.model_row)
-
-        self.cache_row = QWidget()
-        cache_layout = QHBoxLayout(self.cache_row)
-        cache_layout.setContentsMargins(0, 0, 0, 0)
+        
+        form_layout.addRow("Model Size", self.model_combo)
+        
+        cache_layout = QHBoxLayout()
         self.cache_path = QLineEdit()
-        self.cache_path.setPlaceholderText("Moonshine model storage path")
+        self.cache_path.setPlaceholderText("Storage folder path")
         self.cache_path.textChanged.connect(self._update_moonshine_model_status)
+        
         browse_cache_button = QPushButton("Browse")
         browse_cache_button.clicked.connect(self._browse_moonshine_cache)
         default_cache_button = QPushButton("Default")
         default_cache_button.clicked.connect(self._use_default_moonshine_cache)
+        
         cache_layout.addWidget(self.cache_path, 1)
         cache_layout.addWidget(browse_cache_button)
         cache_layout.addWidget(default_cache_button)
-        self.form.addRow("Model Storage", self.cache_row)
+        
+        form_layout.addRow("Storage Path", cache_layout)
+        box_layout.addLayout(form_layout)
+        
+        status_row = QHBoxLayout()
+        self._download_status = QLabel("Loading status...")
+        self._download_status.setWordWrap(True)
+        self._download_status.setStyleSheet("color: #a1a1aa;")
+        
+        self._download_button = QPushButton("Download")
+        self._download_button.clicked.connect(self._request_download)
+        
+        status_row.addWidget(self._download_status, 1)
+        status_row.addWidget(self._download_button)
+        box_layout.addLayout(status_row)
+        
+        action_row = QHBoxLayout()
+        test_backend_button = QPushButton("Test Moonshine Backend")
+        test_backend_button.clicked.connect(self._request_backend_test)
+        action_row.addWidget(test_backend_button)
+        action_row.addStretch(1)
+        box_layout.addLayout(action_row)
+        
+        info_label = QLabel(
+            "Moonshine transcribes audio locally on your CPU. The medium model provides the best accuracy."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #71717a; font-size: 11px;")
+        box_layout.addWidget(info_label)
+        
+        layout.addWidget(box)
+        return panel
 
+    def _build_recording_section(self) -> QGroupBox:
+        group = QGroupBox("Dictation & Recording")
+        layout = QFormLayout(group)
+        layout.setLabelAlignment(Qt.AlignRight)
+        
         self.hotkey_combo = QComboBox()
         self.hotkey_combo.addItems(HOTKEYS)
-        self.form.addRow("Hotkey", self.hotkey_combo)
-
-        self.sample_rate = QSpinBox()
-        self.sample_rate.setRange(8000, 48000)
-        self.sample_rate.setSingleStep(1000)
-        self.form.addRow("Sample Rate", self.sample_rate)
-
+        
         self.max_record_seconds = QSpinBox()
         self.max_record_seconds.setRange(30, 1800)
         self.max_record_seconds.setSingleStep(30)
         self.max_record_seconds.setSuffix(" seconds")
-        self.form.addRow("Max Recording", self.max_record_seconds)
+        
+        layout.addRow("Push-To-Talk Key", self.hotkey_combo)
+        layout.addRow("Max Recording", self.max_record_seconds)
+        
+        return group
 
-        layout.addLayout(self.form)
-
-        self._download_status = QLabel("")
-        self._download_status.setWordWrap(True)
-        self._download_status.setStyleSheet("color: #4b5563;")
-        layout.addWidget(self._download_status)
-
-        action_row = QHBoxLayout()
-        test_backend_button = QPushButton("Test Backend")
-        test_backend_button.clicked.connect(self._request_backend_test)
-        save_button = QPushButton("Save")
-        save_button.clicked.connect(self._save_settings)
-        action_row.addStretch(1)
-        action_row.addWidget(test_backend_button)
-        action_row.addWidget(save_button)
-        layout.addStretch(1)
-        layout.addLayout(action_row)
-        return page
+    def _build_advanced_section(self) -> QGroupBox:
+        group = QGroupBox("Advanced Settings")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(12)
+        
+        form_layout = QFormLayout()
+        form_layout.setLabelAlignment(Qt.AlignRight)
+        
+        self.sample_rate = QSpinBox()
+        self.sample_rate.setRange(8000, 48000)
+        self.sample_rate.setSingleStep(1000)
+        self.sample_rate.setSuffix(" Hz")
+        form_layout.addRow("Audio Sample Rate", self.sample_rate)
+        
+        config_path_label = QLabel(str(get_app_config_path()))
+        config_path_label.setWordWrap(True)
+        config_path_label.setStyleSheet("color: #71717a; font-family: monospace; font-size: 11px;")
+        form_layout.addRow("Config File Path", config_path_label)
+        
+        layout.addLayout(form_layout)
+        
+        buttons_layout = QHBoxLayout()
+        
+        diagnostics_button = QPushButton("Diagnostics Report")
+        diagnostics_button.clicked.connect(self.diagnostics_requested.emit)
+        
+        reset_button = QPushButton("Reset Settings")
+        reset_button.clicked.connect(self._reset_settings)
+        
+        buttons_layout.addWidget(diagnostics_button)
+        buttons_layout.addWidget(reset_button)
+        buttons_layout.addStretch(1)
+        
+        layout.addLayout(buttons_layout)
+        return group
 
     def _load_config(self, config: Config) -> None:
-        backend_label = next(
-            (label for label, provider in BACKENDS.items() if provider == config.model_provider),
-            "Online - Deepgram",
-        )
-        self.backend_combo.setCurrentText(backend_label)
+        self.deepgram_radio.blockSignals(True)
+        self.moonshine_radio.blockSignals(True)
+        if config.model_provider == "moonshine":
+            self.moonshine_radio.setChecked(True)
+        else:
+            self.deepgram_radio.setChecked(True)
+        self.deepgram_radio.blockSignals(False)
+        self.moonshine_radio.blockSignals(False)
+
         self._set_deepgram_key_saved(bool(get_deepgram_api_key()))
         self._model_dirs = dict(config.moonshine_model_dirs)
         if config.moonshine_cache_dir:
@@ -508,7 +715,7 @@ class MainWindow(QMainWindow):
 
     def _current_config(self) -> Config:
         config = load_config(use_app_data=True)
-        config.model_provider = BACKENDS[self.backend_combo.currentText()]
+        config.model_provider = "moonshine" if self.moonshine_radio.isChecked() else "deepgram"
         config.model_arch = MOONSHINE_MODELS[self.model_combo.currentText()]
         config.moonshine_cache_dir = self.cache_path.text().strip()
         self._model_dirs[str(config.model_arch)] = config.moonshine_cache_dir
@@ -524,6 +731,7 @@ class MainWindow(QMainWindow):
         key = self.deepgram_key.text().strip()
         if not key and get_deepgram_api_key():
             self._set_deepgram_key_saved(True)
+            self._update_readiness_badge()
             return True
         try:
             set_deepgram_api_key(key)
@@ -532,13 +740,14 @@ class MainWindow(QMainWindow):
             return False
         self._set_deepgram_key_saved(bool(key))
         self.statusBar().showMessage("Deepgram key saved.", 3000)
+        self._update_readiness_badge()
         return True
 
     def _test_deepgram_key(self) -> None:
         if not self._save_deepgram_key():
             return
         if get_deepgram_api_key():
-            QMessageBox.information(self, "Deepgram Key", "Deepgram key is saved.")
+            QMessageBox.information(self, "Deepgram Key", "Deepgram key is saved and verified.")
         else:
             QMessageBox.warning(self, "Deepgram Key", "Deepgram key is empty.")
 
@@ -558,6 +767,9 @@ class MainWindow(QMainWindow):
         self._show_home()
 
     def _request_download(self) -> None:
+        if self._download_button.text() == "Show Progress":
+            self.download_requested.emit(MOONSHINE_MODELS[self.model_combo.currentText()])
+            return
         installed, message = is_moonshine_model_downloaded(
             MOONSHINE_MODELS[self.model_combo.currentText()],
             self.cache_path.text().strip(),
@@ -590,11 +802,12 @@ class MainWindow(QMainWindow):
         self.save_key_button.setVisible(True)
         self.change_key_button.setVisible(False)
         self.deepgram_key.setFocus()
+        self._update_readiness_badge()
 
     def _set_deepgram_key_saved(self, saved: bool) -> None:
         self.deepgram_key.clear()
         self.deepgram_key_status.setText(
-            "API key saved." if saved else "No API key saved."
+            "API key saved & secured." if saved else "No API key saved."
         )
         self.deepgram_key_status.setVisible(True)
         self.deepgram_key.setVisible(not saved)
@@ -602,19 +815,15 @@ class MainWindow(QMainWindow):
         self.change_key_button.setVisible(saved)
 
     def _sync_backend_visibility(self) -> None:
-        is_moonshine = BACKENDS[self.backend_combo.currentText()] == "moonshine"
-        self.form.setRowVisible(self.deepgram_row, not is_moonshine)
-        self.form.setRowVisible(self.model_row, is_moonshine)
-        self.form.setRowVisible(self.cache_row, is_moonshine)
+        is_moonshine = self.moonshine_radio.isChecked()
+        self.backend_stack.setCurrentIndex(1 if is_moonshine else 0)
         self.model_combo.setEnabled(is_moonshine)
-        if self._download_status is None:
-            return
         if is_moonshine:
             self._update_moonshine_model_status()
         else:
-            if self._download_button is not None:
-                self._download_button.setEnabled(False)
-            self._download_status.setText("Deepgram runs online and does not need a local model.")
+            if self._download_status is not None:
+                self._download_status.setText("Deepgram runs online and does not need a local model.")
+        self._update_readiness_badge()
 
     def _browse_moonshine_cache(self) -> None:
         folder = QFileDialog.getExistingDirectory(
@@ -639,17 +848,61 @@ class MainWindow(QMainWindow):
     def _update_moonshine_model_status(self) -> None:
         if self._download_status is None or self._download_button is None:
             return
-        if BACKENDS[self.backend_combo.currentText()] != "moonshine":
+        if not self.moonshine_radio.isChecked():
             return
         model_arch = MOONSHINE_MODELS[self.model_combo.currentText()]
         cache_dir = self.cache_path.text().strip()
         self._model_dirs[str(model_arch)] = cache_dir
         installed, message = is_moonshine_model_downloaded(model_arch, cache_dir)
         self._download_button.setEnabled(not installed)
-        self._download_button.setText("Downloaded" if installed else "Download")
+        self._download_button.setText("Downloaded" if installed else "Download Model")
         self._download_status.setText(
             message if installed else f"Download required. {message}"
         )
+        self._update_readiness_badge()
+
+    def _update_readiness_badge(self) -> None:
+        if self.deepgram_radio.isChecked():
+            saved_key = get_deepgram_api_key()
+            if saved_key:
+                self.backend_readiness_badge.setText("Ready")
+                self.backend_readiness_badge.setStyleSheet(
+                    "border-radius: 4px; padding: 4px 8px; font-weight: bold; background-color: #10b981; color: #ffffff;"
+                )
+            else:
+                self.backend_readiness_badge.setText("Needs API Key")
+                self.backend_readiness_badge.setStyleSheet(
+                    "border-radius: 4px; padding: 4px 8px; font-weight: bold; background-color: #f59e0b; color: #ffffff;"
+                )
+        else:
+            model_arch = MOONSHINE_MODELS[self.model_combo.currentText()]
+            cache_dir = self.cache_path.text().strip()
+            installed, message = is_moonshine_model_downloaded(model_arch, cache_dir)
+            if installed:
+                self.backend_readiness_badge.setText("Ready")
+                self.backend_readiness_badge.setStyleSheet(
+                    "border-radius: 4px; padding: 4px 8px; font-weight: bold; background-color: #10b981; color: #ffffff;"
+                )
+            else:
+                self.backend_readiness_badge.setText("Needs Download")
+                self.backend_readiness_badge.setStyleSheet(
+                    "border-radius: 4px; padding: 4px 8px; font-weight: bold; background-color: #f59e0b; color: #ffffff;"
+                )
+
+    def _reset_settings(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Reset Settings",
+            "Are you sure you want to reset all settings to defaults? This will not clear your saved Deepgram key.",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        
+        default_cfg = Config()
+        self._load_config(default_cfg)
+        save_config(default_cfg, use_app_data=True)
+        self.config_saved.emit(default_cfg)
+        self.statusBar().showMessage("Settings reset to default.", 3000)
 
     def _show_home(self) -> None:
         self.pages.setCurrentWidget(self.home_page)
@@ -670,8 +923,7 @@ class MainWindow(QMainWindow):
         self.activateWindow()
 
     def _current_backend_summary(self) -> str:
-        provider = BACKENDS[self.backend_combo.currentText()]
-        if provider == "deepgram":
+        if self.deepgram_radio.isChecked():
             return "Deepgram online"
         return f"Moonshine {self.model_combo.currentText()} local"
 
@@ -825,7 +1077,14 @@ class DesktopApp(QObject):
     @Slot(int)
     def download_model(self, model_arch: int) -> None:
         if self.download_dialog is not None:
-            self.window.show_download_result("A model download is already running.")
+            if self._download_minimized:
+                self._download_minimized = False
+                self.window.set_download_busy(True, minimized=False)
+                self.download_dialog.show()
+                self.download_dialog.raise_()
+                self.download_dialog.activateWindow()
+            else:
+                self.window.show_download_result("A model download is already running.")
             return
 
         model_name = next(
@@ -838,7 +1097,7 @@ class DesktopApp(QObject):
         self.download_dialog.cancel_requested.connect(self._cancel_model_download)
         self.download_dialog.show()
 
-        self.window.set_download_busy(True)
+        self.window.set_download_busy(True, minimized=False)
         worker = ModelDownloadWorker(model_arch, self.window.cache_path.text().strip())
         self._active_download_arch = model_arch
         self.download_worker = worker
@@ -852,11 +1111,10 @@ class DesktopApp(QObject):
         self._download_minimized = True
         if self.download_dialog is not None:
             self.download_dialog.hide()
-        self.window.setEnabled(False)
-        self.window.showMinimized()
+        self.window.set_download_busy(True, minimized=True)
         self.tray.showMessage(
             "Moonshine Download",
-            "Model download is running in the background.",
+            "Model download is running in the background. You can restore progress via the Settings screen.",
             QSystemTrayIcon.Information,
             3000,
         )
@@ -1126,6 +1384,166 @@ class DesktopApp(QObject):
         QMessageBox.information(self.window, "Test Backend", output)
 
 
+DARK_THEME_QSS = """
+/* Base / global styles */
+QWidget {
+    background-color: #121214;
+    color: #e4e4e7;
+    font-family: 'Segoe UI', -apple-system, sans-serif;
+    font-size: 13px;
+}
+
+QStatusBar {
+    background-color: #1a1a1e;
+    color: #a1a1aa;
+    border-top: 1px solid #2d2d34;
+}
+
+/* Scroll Area styling */
+QScrollArea {
+    border: none;
+    background-color: #121214;
+}
+QScrollArea > QWidget > QWidget {
+    background-color: #121214;
+}
+
+/* Scrollbar styling */
+QScrollBar:vertical {
+    border: none;
+    background: #18181b;
+    width: 10px;
+    margin: 0px;
+}
+QScrollBar::handle:vertical {
+    background: #3f3f46;
+    min-height: 20px;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #52525b;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    border: none;
+    background: none;
+    height: 0px;
+}
+
+/* GroupBox Section styling */
+QGroupBox {
+    background-color: #1a1a1e;
+    border: 1px solid #2d2d34;
+    border-radius: 8px;
+    margin-top: 24px;
+    padding-top: 20px;
+    font-weight: bold;
+    font-size: 14px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px;
+    padding: 2px 6px;
+    color: #10b981;
+}
+
+/* Frames / Cards styling */
+QFrame {
+    border: none;
+}
+
+/* Labels */
+QLabel {
+    background: transparent;
+}
+
+/* Input elements styling */
+QLineEdit, QSpinBox, QComboBox {
+    background-color: #27272a;
+    border: 1px solid #3f3f46;
+    border-radius: 6px;
+    padding: 6px 12px;
+    color: #f4f4f5;
+}
+QLineEdit:focus, QSpinBox:focus, QComboBox:focus {
+    border-color: #10b981;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 24px;
+    border-left: none;
+}
+
+/* Radio buttons */
+QRadioButton {
+    spacing: 8px;
+    font-weight: 500;
+}
+QRadioButton::indicator {
+    width: 18px;
+    height: 18px;
+}
+QRadioButton::indicator::unchecked {
+    border: 2px solid #3f3f46;
+    border-radius: 9px;
+    background-color: #1e1e22;
+}
+QRadioButton::indicator::checked {
+    border: 2px solid #10b981;
+    border-radius: 9px;
+    background-color: #10b981;
+}
+
+/* Push buttons styling */
+QPushButton {
+    background-color: #27272a;
+    border: 1px solid #3f3f46;
+    border-radius: 6px;
+    padding: 8px 16px;
+    color: #f4f4f5;
+    font-weight: 600;
+}
+QPushButton:hover {
+    background-color: #3f3f46;
+    border-color: #52525b;
+}
+QPushButton:pressed {
+    background-color: #18181b;
+}
+QPushButton:disabled {
+    background-color: #18181b;
+    border-color: #27272a;
+    color: #71717a;
+}
+
+QPushButton[class="PrimaryButton"] {
+    background-color: #10b981;
+    border: 1px solid #059669;
+    color: #ffffff;
+}
+QPushButton[class="PrimaryButton"]:hover {
+    background-color: #059669;
+}
+QPushButton[class="PrimaryButton"]:pressed {
+    background-color: #047857;
+}
+
+QPushButton[class="DangerButton"] {
+    background-color: #ef4444;
+    border: 1px solid #dc2626;
+    color: #ffffff;
+}
+QPushButton[class="DangerButton"]:hover {
+    background-color: #dc2626;
+}
+QPushButton[class="DangerButton"]:pressed {
+    background-color: #b91c1c;
+}
+"""
+
+
 def _strip_ansi(text: str) -> str:
     """Remove terminal color/control sequences before showing text in Qt."""
     return re.sub(r"\x1b\[[0-9;]*m", "", text)
@@ -1142,6 +1560,7 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    app.setStyleSheet(DARK_THEME_QSS)
 
     if not QSystemTrayIcon.isSystemTrayAvailable():
         QMessageBox.critical(None, "Voice Automation", "System tray is not available.")
