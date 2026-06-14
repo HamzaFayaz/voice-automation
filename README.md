@@ -49,38 +49,24 @@ The project also shows the kind of engineering judgment recruiters tend to look 
 
 ## System Design
 
-```text
-[ Global Hotkey ]
-  right_ctrl / F8
-         |
-         | press
-         v
-[ Audio Capture ]
-  sounddevice
-  short mono chunks
-         |
-         | audio stream
-         v
-[ Speech-to-Text Adapter ]
-  - Deepgram API
-  - Moonshine Local
-         |
-         | transcript
-         v
-[ Text Cleanup ]
-  spacing, casing,
-  replacements
-         |
-         | clean text
-         v
-[ Text Insertion ]
-  clipboard paste
-  direct typing
-         |
-         v
-[ Active App ]
-  Cursor, terminal,
-  browser, docs
+```mermaid
+graph TD
+    classDef default fill:#1a1a1e,stroke:#2d2d34,stroke-width:1px,color:#e4e4e7;
+    classDef active fill:#10b981,stroke:#059669,stroke-width:2px,color:#ffffff;
+    classDef process fill:#27272a,stroke:#3f3f46,stroke-width:1px,color:#f4f4f5;
+
+    Hotkey["Global Hotkey<br>(right_ctrl / F8)"]:::active
+    Audio["Audio Capture<br>(sounddevice / mono chunks)"]:::process
+    STT["Speech-to-Text Adapter<br>(Deepgram API / Moonshine Local)"]:::process
+    Cleanup["Text Cleanup<br>(casing, spacing, replacements)"]:::process
+    Insert["Text Insertion<br>(clipboard paste / direct typing)"]:::process
+    App["Active App<br>(Cursor, Terminal, Browser, Docs)"]:::active
+
+    Hotkey -->|press| Audio
+    Audio -->|audio stream| STT
+    STT -->|raw transcript| Cleanup
+    Cleanup -->|cleaned text| Insert
+    Insert -->|paste / type| App
 ```
 
 ### Latency Strategy
