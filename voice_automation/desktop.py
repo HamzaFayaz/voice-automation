@@ -233,6 +233,13 @@ class SettingsWindow(QMainWindow):
         self.statusBar().showMessage("Deepgram key saved.", 3000)
 
     def _save_settings(self) -> None:
+        if self.deepgram_key.text().strip():
+            try:
+                set_deepgram_api_key(self.deepgram_key.text().strip())
+            except RuntimeError as exc:
+                QMessageBox.warning(self, "Deepgram Key", str(exc))
+                return
+
         config = self._current_config()
         errors = validate_config(config, require_deepgram_key=config.model_provider == "deepgram")
         if errors:
