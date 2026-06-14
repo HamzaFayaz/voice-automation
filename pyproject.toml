@@ -19,6 +19,7 @@ dependencies = [
     "websockets",
     "PySide6",
     "keyring",
+    "pyinstaller",
 ]
 
 [project.scripts]
