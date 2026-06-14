@@ -293,6 +293,13 @@ class DesktopApp(QObject):
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
         self._set_status("stopped")
+        self.show_settings()
+        self.tray.showMessage(
+            "Voice Automation",
+            "Desktop app is running in the system tray.",
+            QSystemTrayIcon.Information,
+            3000,
+        )
 
     def _build_menu(self) -> QMenu:
         menu = QMenu()
