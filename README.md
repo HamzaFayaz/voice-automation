@@ -283,6 +283,70 @@ python -m voice_automation download-model
 
 Note: model download currently applies to Moonshine mode. Deepgram does not need a local model download.
 
+## Desktop App
+
+The desktop app is the V1 Windows-first interface for Voice Automation. It is tray-first: the app runs in the system tray and opens a settings window for backend, hotkey, paste mode, and model configuration.
+
+Run the desktop app from source:
+
+```bat
+python -m voice_automation.desktop
+```
+
+If the project is installed with console scripts available, you can also run:
+
+```bat
+voice-automation-desktop
+```
+
+The tray menu includes Start Dictation, Stop Dictation, Settings, Check Environment, and Quit.
+
+### Desktop Deepgram Setup
+
+In the desktop settings window:
+
+1. Select `Deepgram API` as the backend.
+2. Paste your Deepgram API key into the API key field.
+3. Save the key.
+4. Save or apply the settings.
+
+The desktop app stores the Deepgram API key in the operating system credential store through `keyring`, not in the JSON config file. The CLI still supports `.env` and JSON-based keys for development compatibility, but the desktop settings flow should use the keyring-backed field.
+
+Deepgram mode does not require a local model download.
+
+### Desktop Moonshine Setup
+
+In the desktop settings window:
+
+1. Select `Moonshine Local` as the backend.
+2. Choose a Moonshine model:
+   - Tiny `0`
+   - Base `1`
+   - Tiny Streaming `2`
+   - Base Streaming `3`
+   - Small Streaming `4`
+   - Medium Streaming `5`
+3. Click the Moonshine download button.
+4. Save or apply the settings.
+
+Moonshine runs locally after the selected model is downloaded. For the best local accuracy, use Medium Streaming `5`.
+
+### Building The Desktop Executable
+
+The V1 package target is a Windows PyInstaller one-folder build. From an activated virtual environment with the project dependencies installed, build with the provided PyInstaller spec or build script:
+
+```bat
+pyinstaller voice_automation_desktop.spec
+```
+
+If a build script is present in your checkout, use it as the wrapper around the same PyInstaller build:
+
+```bat
+build_desktop.bat
+```
+
+Build outputs are written under `build\` and `dist\`.
+
 ## Project Structure
 
 ```text
