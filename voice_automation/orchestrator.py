@@ -13,6 +13,8 @@ import threading
 import time
 from typing import Any
 
+import numpy as np
+
 from voice_automation.audio import AudioCapture
 from voice_automation.cleanup import clean_transcript
 from voice_automation.config import Config, load_config
@@ -180,13 +182,14 @@ class _Orchestrator:
             # Play start sound cue
             play_sound_cue("start", self.cfg)
 
-            # Start background streaming feed thread
-            self._streaming_thread = threading.Thread(
-                target=self._feed_streaming_audio,
-                daemon=True,
-                name="voice-streaming-feed"
-            )
-            self._streaming_thread.start()
+            if self.cfg.model_provider != "deepgram":
+                # Start background streaming feed thread for local streaming backends.
+                self._streaming_thread = threading.Thread(
+                    target=self._feed_streaming_audio,
+                    daemon=True,
+                    name="voice-streaming-feed"
+                )
+                self._streaming_thread.start()
 
             _safe_print("🎤 Recording…")
             logger.info("Recording started")
@@ -216,7 +219,7 @@ class _Orchestrator:
 
         # Stop recording synchronously (fast) to free the mic immediately.
         try:
-            self.audio.stop_recording()
+            captured_audio = self.audio.stop_recording()
         except Exception:
             logger.exception("Failed to stop recording")
             _safe_print("❌ Could not stop recording – see log")
@@ -228,13 +231,17 @@ class _Orchestrator:
         # Offload the finalization to a background worker thread.
         worker = threading.Thread(
             target=self._run_finalize_pipeline,
-            args=(duration_s,),
+            args=(duration_s, captured_audio),
             daemon=True,
             name="voice-pipeline-finalize",
         )
         worker.start()
 
-    def _run_finalize_pipeline(self, duration_s: float) -> None:
+    def _run_finalize_pipeline(
+        self,
+        duration_s: float,
+        captured_audio: np.ndarray | None = None,
+    ) -> None:
         try:
             # Wait for streaming thread to finish feeding remaining chunks
             if self._streaming_thread is not None:
@@ -268,7 +275,11 @@ class _Orchestrator:
             )
 
             t_start_trans = time.monotonic()
-            raw_text = self.stt.end_stream()
+            if self.cfg.model_provider == "deepgram" and captured_audio is not None:
+                self.stt.end_stream()
+                raw_text = self.stt.transcribe(captured_audio, self.cfg.sample_rate)
+            else:
+                raw_text = self.stt.end_stream()
             t_end_trans = time.monotonic()
 
             transcribe_ms = int((t_end_trans - t_start_trans) * 1000)

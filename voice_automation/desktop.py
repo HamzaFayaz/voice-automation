@@ -232,15 +232,20 @@ class MainWindow(QMainWindow):
         self.deepgram_row = QWidget()
         key_layout = QHBoxLayout(self.deepgram_row)
         key_layout.setContentsMargins(0, 0, 0, 0)
+        self.deepgram_key_status = QLabel("No API key saved.")
         self.deepgram_key = QLineEdit()
         self.deepgram_key.setEchoMode(QLineEdit.Password)
         self.deepgram_key.setPlaceholderText("Deepgram API key")
-        save_key_button = QPushButton("Save")
-        save_key_button.clicked.connect(self._save_deepgram_key)
+        self.save_key_button = QPushButton("Save")
+        self.save_key_button.clicked.connect(self._save_deepgram_key)
+        self.change_key_button = QPushButton("Change API Key")
+        self.change_key_button.clicked.connect(self._edit_deepgram_key)
         test_key_button = QPushButton("Test")
         test_key_button.clicked.connect(self._test_deepgram_key)
+        key_layout.addWidget(self.deepgram_key_status)
         key_layout.addWidget(self.deepgram_key, 1)
-        key_layout.addWidget(save_key_button)
+        key_layout.addWidget(self.save_key_button)
+        key_layout.addWidget(self.change_key_button)
         key_layout.addWidget(test_key_button)
         self.form.addRow("Deepgram Key", self.deepgram_row)
 
@@ -295,7 +300,7 @@ class MainWindow(QMainWindow):
             "Online - Deepgram",
         )
         self.backend_combo.setCurrentText(backend_label)
-        self.deepgram_key.setText(get_deepgram_api_key())
+        self._set_deepgram_key_saved(bool(get_deepgram_api_key()))
         self._set_combo_by_value(self.model_combo, MOONSHINE_MODELS, config.model_arch)
         self.hotkey_combo.setCurrentText(config.hotkey)
         self.sample_rate.setValue(config.sample_rate)
@@ -315,11 +320,16 @@ class MainWindow(QMainWindow):
         return config
 
     def _save_deepgram_key(self) -> bool:
+        key = self.deepgram_key.text().strip()
+        if not key and get_deepgram_api_key():
+            self._set_deepgram_key_saved(True)
+            return True
         try:
-            set_deepgram_api_key(self.deepgram_key.text().strip())
+            set_deepgram_api_key(key)
         except RuntimeError as exc:
             QMessageBox.warning(self, "Deepgram Key", str(exc))
             return False
+        self._set_deepgram_key_saved(bool(key))
         self.statusBar().showMessage("Deepgram key saved.", 3000)
         return True
 
@@ -364,6 +374,24 @@ class MainWindow(QMainWindow):
             "After you click OK, say a short sentence. The app will record for 3 seconds.",
         )
         self.test_requested.emit(config)
+
+    def _edit_deepgram_key(self) -> None:
+        self.deepgram_key.clear()
+        self.deepgram_key_status.setVisible(False)
+        self.deepgram_key.setVisible(True)
+        self.save_key_button.setVisible(True)
+        self.change_key_button.setVisible(False)
+        self.deepgram_key.setFocus()
+
+    def _set_deepgram_key_saved(self, saved: bool) -> None:
+        self.deepgram_key.clear()
+        self.deepgram_key_status.setText(
+            "API key saved." if saved else "No API key saved."
+        )
+        self.deepgram_key_status.setVisible(True)
+        self.deepgram_key.setVisible(not saved)
+        self.save_key_button.setVisible(not saved)
+        self.change_key_button.setVisible(saved)
 
     def _sync_backend_visibility(self) -> None:
         is_moonshine = BACKENDS[self.backend_combo.currentText()] == "moonshine"
