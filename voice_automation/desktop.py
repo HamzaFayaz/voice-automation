@@ -301,6 +301,15 @@ class MainWindow(QMainWindow):
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(False)
 
+    def set_readiness_issues(self, issues: list[str]) -> None:
+        if not issues:
+            self.readiness_label.setText("")
+            self.start_button.setToolTip("")
+            return
+
+        self.readiness_label.setText("Setup required: " + " ".join(issues))
+        self.start_button.setToolTip("Finish setup in Settings before starting dictation.")
+
     def set_download_busy(self, busy: bool) -> None:
         if self._download_button is not None:
             self._download_button.setEnabled(not busy)
@@ -331,6 +340,11 @@ class MainWindow(QMainWindow):
         self.status_detail.setWordWrap(True)
         self.status_detail.setStyleSheet("font-size: 14px; color: #4b5563;")
 
+        self.readiness_label = QLabel("")
+        self.readiness_label.setAlignment(Qt.AlignCenter)
+        self.readiness_label.setWordWrap(True)
+        self.readiness_label.setStyleSheet("font-size: 13px; color: #b45309;")
+
         button_row = QHBoxLayout()
         self.start_button = QPushButton("Start")
         self.stop_button = QPushButton("Stop")
@@ -356,6 +370,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
         layout.addWidget(self.status_label)
         layout.addWidget(self.status_detail)
+        layout.addWidget(self.readiness_label)
         layout.addSpacing(10)
         layout.addLayout(button_row)
         layout.addLayout(secondary_row)
@@ -679,6 +694,7 @@ class DesktopApp(QObject):
         self._download_minimized = False
         self._active_download_arch: int | None = None
         self._service_busy = False
+        self._readiness_issues: list[str] = []
 
         icon = self._build_icon()
         self.app.setWindowIcon(icon)
@@ -698,6 +714,7 @@ class DesktopApp(QObject):
         self.tray.setContextMenu(self._build_menu())
         self.tray.activated.connect(self._on_tray_activated)
         self.tray.show()
+        self._refresh_readiness()
         self._set_status("stopped")
         self.window.show_home_page()
         self.tray.showMessage(
@@ -736,6 +753,15 @@ class DesktopApp(QObject):
     def start_service(self) -> None:
         if self.service.is_running or self._service_busy:
             return
+        issues = self._refresh_readiness()
+        if issues:
+            QMessageBox.warning(
+                self.window,
+                "Setup Required",
+                "Finish setup before starting dictation:\n\n" + "\n".join(issues),
+            )
+            self.window.show_settings_page()
+            return
         self._service_busy = True
         self.status_changed.emit("starting")
         worker = FunctionWorker(self.service.start)
@@ -759,7 +785,16 @@ class DesktopApp(QObject):
         if config.model_provider == "deepgram" and not config.deepgram_api_key:
             config.deepgram_api_key = get_deepgram_api_key()
         self.config = dataclasses.replace(config)
+        issues = self._refresh_readiness()
         if self.service.is_running:
+            if issues:
+                QMessageBox.warning(
+                    self.window,
+                    "Settings Saved",
+                    "Settings were saved, but they were not applied to the running dictation service because setup is incomplete.",
+                )
+                self._set_status("running")
+                return
             if self._service_busy:
                 QMessageBox.warning(
                     self.window,
@@ -775,6 +810,7 @@ class DesktopApp(QObject):
             self.thread_pool.start(worker)
         else:
             self.service.config = self.config
+            self._set_status("stopped")
 
     @Slot(int)
     def download_model(self, model_arch: int) -> None:
@@ -902,17 +938,44 @@ class DesktopApp(QObject):
         self.window.set_status(status)
         self.tray.setToolTip(f"Voice Automation - {status}")
         running = self.service.is_running
-        self.start_action.setEnabled(not running and not self._service_busy)
+        ready = not self._readiness_issues
+        self.start_action.setEnabled(not running and not self._service_busy and ready)
         self.stop_action.setEnabled(running and not self._service_busy)
         self.window.set_running(running)
         self.window.set_controls_busy(self._service_busy)
+        if not running and not self._service_busy and self._readiness_issues:
+            self.window.start_button.setEnabled(False)
 
     def _service_action_finished(self) -> None:
         self._service_busy = False
+        if not self.service.is_running:
+            self.service.config = self.config
+        self._refresh_readiness()
         if self.service.last_error and not self.service.is_running:
             self._set_status(f"error: {self.service.last_error}")
             return
         self._set_status("running" if self.service.is_running else "stopped")
+
+    def _refresh_readiness(self) -> list[str]:
+        self._readiness_issues = self._get_readiness_issues(self.config)
+        self.window.set_readiness_issues(self._readiness_issues)
+        return self._readiness_issues
+
+    @staticmethod
+    def _get_readiness_issues(config: Config) -> list[str]:
+        errors = validate_config(
+            config,
+            require_deepgram_key=config.model_provider == "deepgram",
+        )
+        issues = [f"- {error}" for error in errors]
+        if config.model_provider == "moonshine":
+            installed, message = is_moonshine_model_downloaded(
+                config.model_arch,
+                config.get_moonshine_cache_dir(),
+            )
+            if not installed:
+                issues.append(f"- Moonshine model is not ready. {message}")
+        return issues
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.DoubleClick:
