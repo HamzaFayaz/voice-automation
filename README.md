@@ -1,13 +1,15 @@
 # Voice Automation
 
-A Windows push-to-talk voice automation tool for writing, searching, coding, and operating text fields faster across desktop applications.
+A Windows push-to-talk voice dictation tool I built to reduce typing friction in AI engineering workflows.
 
-This project was built to reduce repetitive typing during daily AI engineering work. The app runs in the background, listens only while a hotkey is held, transcribes speech, cleans the transcript, and inserts the result into the currently focused application.
+It runs in the background, listens only while a hotkey is held, transcribes speech, cleans the transcript, and inserts the result into the currently focused application. The design is intentionally lightweight: short recording windows, background processing, and explicit backend choice between cloud and local speech models.
 
 It supports two speech-to-text modes:
 
 - **Deepgram API mode** for high-accuracy cloud transcription.
 - **Moonshine local mode** for offline, CPU-friendly transcription.
+
+The project is framed as a personal productivity tool, but it is built like a real desktop utility: tray-first UI, secure API key storage, app-data config, model download management, and Windows packaging.
 
 ## License
 
@@ -26,6 +28,8 @@ Voice Automation is designed as a lightweight system-wide dictation shortcut:
 
 The goal is not to replace the keyboard. The goal is to make common text-heavy actions faster.
 
+The project also shows the kind of engineering judgment recruiters tend to look for: clear system boundaries, latency-aware processing, explicit online/offline tradeoffs, and a desktop UI that behaves like a real product instead of a demo.
+
 ## Features
 
 - Global push-to-talk hotkey.
@@ -33,11 +37,15 @@ The goal is not to replace the keyboard. The goal is to make common text-heavy a
 - Works across normal Windows text fields.
 - Supports Deepgram cloud transcription.
 - Supports Moonshine local transcription.
+- Tray-first Windows desktop app with Home and Settings screens.
+- Secure Deepgram API key storage with the Windows credential store.
+- Moonshine model selection, download, and verification from the desktop UI.
 - Clipboard paste insertion with direct typing fallback.
 - Optional command execution in terminals by ending speech with "run" or "execute".
 - Lightweight transcript cleanup and word replacements.
 - Small overlay HUD for recording/transcription feedback.
 - Config-driven backend switching.
+- Diagnostics and environment checks for setup debugging.
 
 ## System Design
 
@@ -49,14 +57,13 @@ The goal is not to replace the keyboard. The goal is to make common text-heavy a
          v
 [ Audio Capture ]
   sounddevice
-  mono chunks
+  short mono chunks
          |
          | audio stream
          v
 [ Speech-to-Text Adapter ]
   - Deepgram API
   - Moonshine Local
-  - faster-whisper fallback
          |
          | transcript
          v
@@ -75,6 +82,14 @@ The goal is not to replace the keyboard. The goal is to make common text-heavy a
   Cursor, terminal,
   browser, docs
 ```
+
+### Latency Strategy
+
+- Push-to-talk only, not always listening.
+- Short audio chunks so the recording loop stays responsive.
+- Background transcription so the UI and hotkey listener stay usable.
+- Direct typing fallback when clipboard paste is not suitable.
+- Offline Moonshine mode when network latency or privacy is a concern.
 
 ## Backend Modes
 
@@ -107,6 +122,8 @@ The API key can be set either in `voice_automation_config.json` or in a `.env` f
 ```env
 DEEPGRAM_API_KEY=your_api_key_here
 ```
+
+In the desktop app, the key is stored in the operating system credential store through `keyring`, not in the JSON config file.
 
 ### Moonshine Local Mode
 
@@ -201,7 +218,7 @@ Current important settings:
 | Setting | Purpose |
 |---|---|
 | `hotkey` | Key used for push-to-talk |
-| `model_provider` | `deepgram`, `moonshine`, or `faster-whisper` |
+| `model_provider` | `deepgram` or `moonshine` |
 | `deepgram_api_key` | API key for Deepgram mode |
 | `model_arch` | Moonshine model architecture |
 | `sample_rate` | Audio sample rate |
@@ -285,7 +302,7 @@ Note: model download currently applies to Moonshine mode. Deepgram does not need
 
 ## Desktop App
 
-The desktop app is the V1 Windows-first interface for Voice Automation. It is tray-first and opens to a simple Home screen with Start and Stop controls. Configuration lives in a separate Settings screen so normal use stays focused on turning dictation on or off.
+The desktop app is the V1 Windows-first interface for Voice Automation. It is tray-first and opens to a simple Home screen with Start and Stop controls. Settings handles backend selection, Deepgram key storage, Moonshine model management, hotkey choice, and recording limits.
 
 Run the desktop app from source:
 
@@ -300,10 +317,11 @@ voice-automation-desktop
 ```
 
 The tray menu includes Start Dictation, Stop Dictation, Settings, Check Environment, and Quit.
+The tray menu also includes Diagnostics.
 
 ### Desktop Home Screen
 
-The Home screen shows the current dictation status and the primary Start and Stop buttons. Use Settings when you need to change the speech backend, Deepgram API key, Moonshine model, hotkey, or maximum recording time.
+The Home screen shows the current dictation status, backend readiness, the primary Start and Stop buttons, and quick access to Settings, Check Environment, and Diagnostics. Use Settings when you need to change the speech backend, Deepgram API key, Moonshine model, hotkey, or maximum recording time.
 
 The desktop app uses direct typing mode by default and does not expose a paste-mode selector. The project still has CLI/config support for insertion behavior, but the desktop workflow is optimized around typing into the active application.
 
@@ -318,8 +336,11 @@ The Settings screen is where desktop users configure:
 | Moonshine model | Select and download the offline model |
 | Hotkey | Choose the push-to-talk key |
 | Max recording seconds | Safety cap for one recording |
+| Sample rate | Advanced audio tuning value |
+| Model storage | Moonshine download location |
 
 The recommended default for `max_record_seconds` is `300` seconds. Normal push-to-talk still stops when the key is released; the time limit is a safety fallback in case a release event is missed or recording gets stuck.
+The UI now shows readiness states so Start stays disabled until the selected backend is actually configured.
 
 ### Desktop Deepgram Setup
 
@@ -350,6 +371,7 @@ In the desktop Settings screen:
 4. Save or apply the settings.
 
 Moonshine runs locally after the selected model is downloaded. For the best local accuracy, use Medium Streaming `5`.
+The UI verifies the selected Moonshine model before enabling Start.
 
 ### Building The Desktop Executable
 
@@ -392,9 +414,21 @@ voice_automation/
 - Audio capture and transcription run through background threads to keep the hotkey loop responsive.
 - Clipboard insertion is preferred because it is faster and more reliable than typing character by character.
 - Direct typing remains available as a fallback for apps where clipboard paste is not suitable.
+- The desktop UI is tray-first and production-oriented rather than dashboard-heavy.
+- Config is stored under `%APPDATA%\VoiceAutomation` for the desktop app.
+- No silent backend fallback: the selected mode must be ready before dictation starts.
 
 ## Current Status
 
-This is a working personal automation project focused on Windows productivity workflows. The active configuration uses Deepgram for transcription accuracy, while Moonshine remains available for local/offline experiments.
+This is a working personal automation project focused on Windows productivity workflows. It is useful to me as an AI engineer because it reduces repetitive typing and keeps dictation close to the apps I already use.
 
-Future improvements may include a tray icon, richer configuration UI, better test coverage, provider-specific setup commands, and packaging as a standalone Windows executable.
+The current desktop implementation includes:
+
+- Tray-first Home and Settings UI
+- Deepgram API key storage through the OS credential store
+- Moonshine model download and readiness checks
+- Diagnostics and environment checks
+- App-data config for desktop use
+- PyInstaller packaging target for Windows
+
+Future improvements may include a richer first-run setup flow, more polished section-based Settings UI, better test coverage, and a production installer.
