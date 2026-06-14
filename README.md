@@ -285,7 +285,7 @@ Note: model download currently applies to Moonshine mode. Deepgram does not need
 
 ## Desktop App
 
-The desktop app is the V1 Windows-first interface for Voice Automation. It is tray-first: the app runs in the system tray and opens a settings window for backend, hotkey, paste mode, and model configuration.
+The desktop app is the V1 Windows-first interface for Voice Automation. It is tray-first and opens to a simple Home screen with Start and Stop controls. Configuration lives in a separate Settings screen so normal use stays focused on turning dictation on or off.
 
 Run the desktop app from source:
 
@@ -301,9 +301,29 @@ voice-automation-desktop
 
 The tray menu includes Start Dictation, Stop Dictation, Settings, Check Environment, and Quit.
 
+### Desktop Home Screen
+
+The Home screen shows the current dictation status and the primary Start and Stop buttons. Use Settings when you need to change the speech backend, Deepgram API key, Moonshine model, hotkey, or maximum recording time.
+
+The desktop app uses direct typing mode by default and does not expose a paste-mode selector. The project still has CLI/config support for insertion behavior, but the desktop workflow is optimized around typing into the active application.
+
+### Desktop Settings
+
+The Settings screen is where desktop users configure:
+
+| Setting | Purpose |
+|---|---|
+| Backend | Choose online Deepgram API or offline Moonshine Local |
+| Deepgram API key | Save the cloud transcription key through the OS credential store |
+| Moonshine model | Select and download the offline model |
+| Hotkey | Choose the push-to-talk key |
+| Max recording seconds | Safety cap for one recording |
+
+The recommended default for `max_record_seconds` is `300` seconds. Normal push-to-talk still stops when the key is released; the time limit is a safety fallback in case a release event is missed or recording gets stuck.
+
 ### Desktop Deepgram Setup
 
-In the desktop settings window:
+In the desktop Settings screen:
 
 1. Select `Deepgram API` as the backend.
 2. Paste your Deepgram API key into the API key field.
@@ -316,7 +336,7 @@ Deepgram mode does not require a local model download.
 
 ### Desktop Moonshine Setup
 
-In the desktop settings window:
+In the desktop Settings screen:
 
 1. Select `Moonshine Local` as the backend.
 2. Choose a Moonshine model:
