@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from typing import Any
 
 from voice_automation.audio import AudioCapture
 from voice_automation.cleanup import clean_transcript
@@ -24,6 +25,16 @@ from voice_automation.stt import SttAdapter, create_stt_adapter
 logger = logging.getLogger(__name__)
 
 
+def _safe_print(*args: Any, **kwargs: Any) -> None:
+    """Print without letting console encoding errors break the engine."""
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        text = " ".join(str(arg) for arg in args)
+        safe_text = text.encode("ascii", errors="replace").decode("ascii")
+        print(safe_text, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Model loading with automatic fallback
 # ---------------------------------------------------------------------------
@@ -33,7 +44,7 @@ def _get_adapter_kwargs(provider: str, cfg: Config) -> dict:
     if provider == "moonshine":
         return {"model_arch": cfg.model_arch}
     elif provider == "deepgram":
-        return {"api_key": cfg.deepgram_api_key}
+        return {"api_key": cfg.deepgram_api_key, "sample_rate": cfg.sample_rate}
     else:
         return {"model_size": cfg.model_size, "compute_type": "int8"}
 
@@ -177,11 +188,11 @@ class _Orchestrator:
             )
             self._streaming_thread.start()
 
-            print("🎤 Recording…")
+            _safe_print("🎤 Recording…")
             logger.info("Recording started")
         except Exception:
             logger.exception("Failed to start recording")
-            print("❌ Could not start recording – see log")
+            _safe_print("❌ Could not start recording – see log")
             self.state.set_state(AppState.IDLE)
 
     def _feed_streaming_audio(self) -> None:
@@ -208,7 +219,7 @@ class _Orchestrator:
             self.audio.stop_recording()
         except Exception:
             logger.exception("Failed to stop recording")
-            print("❌ Could not stop recording – see log")
+            _safe_print("❌ Could not stop recording – see log")
             self.state.set_state(AppState.IDLE)
             return
 
@@ -232,7 +243,7 @@ class _Orchestrator:
 
             # ── Guard: too-short audio ────────────────────────────
             if duration_s < self.cfg.min_record_seconds:
-                print("⚠️  Recording too short (%.2fs) – skipped" % duration_s)
+                _safe_print("⚠️  Recording too short (%.2fs) – skipped" % duration_s)
                 logger.info(
                     "Recording too short (%.2f s < %.2f s) – skipping",
                     duration_s,
@@ -244,13 +255,13 @@ class _Orchestrator:
             # ── Guard: model not loaded ───────────────────────────────────
             if not self.stt.is_loaded():
                 logger.error("STT model is not loaded – cannot transcribe")
-                print("❌ STT model not loaded")
+                _safe_print("❌ STT model not loaded")
                 self.stt.end_stream()
                 return
 
             # ── Finalize Transcription ────────────────────────────────────
             self.state.set_state(AppState.TRANSCRIBING)
-            print("⏳ Transcribing…")
+            _safe_print("⏳ Transcribing…")
             logger.debug(
                 "Finalizing stream transcription for %.2f s of audio",
                 duration_s,
@@ -264,7 +275,7 @@ class _Orchestrator:
             self.state.transcribe_time_ms = transcribe_ms
 
             if not raw_text or not raw_text.strip():
-                print("⚠️  No speech detected")
+                _safe_print("⚠️  No speech detected")
                 logger.info("Transcription returned empty text")
                 return
 
@@ -275,7 +286,7 @@ class _Orchestrator:
                 replacements=self.cfg.replacements
             )
             if not text:
-                print("⚠️  No speech detected")
+                _safe_print("⚠️  No speech detected")
                 logger.info("Cleaned transcript is empty")
                 return
 
@@ -294,17 +305,17 @@ class _Orchestrator:
 
             if ok:
                 # Strip trailing whitespace only for the display message
-                print(f"✅ Pasted: {text.rstrip()}")
+                _safe_print(f"✅ Pasted: {text.rstrip()}")
                 logger.info("Inserted text: %r", text.rstrip())
             else:
-                print("⚠️  Paste failed – see log for details")
+                _safe_print("⚠️  Paste failed – see log for details")
                 logger.warning("TextInserter.insert_text returned False")
                 # Play error sound
                 play_sound_cue("error", self.cfg)
 
         except Exception:
             logger.exception("Unhandled error in transcription pipeline")
-            print("❌ Error during transcription – see log")
+            _safe_print("❌ Error during transcription – see log")
             # Play error sound
             play_sound_cue("error", self.cfg)
         finally:
@@ -327,23 +338,23 @@ def run() -> None:
         service.start()
     except RuntimeError as exc:
         logger.critical("%s", exc)
-        print(f"\nError: {exc}")
-        print("Install/configure a model backend and try again.\n")
+        _safe_print(f"\nError: {exc}")
+        _safe_print("Install/configure a model backend and try again.\n")
         return
 
-    print()
-    print("═" * 52)
-    print("  ✅  Voice Automation is running!")
-    print(f"  🎯  Hold  [{cfg.hotkey}]  to dictate")
-    print("  🛑  Press  Ctrl+C  to quit")
-    print("═" * 52)
-    print()
+    _safe_print()
+    _safe_print("═" * 52)
+    _safe_print("  ✅  Voice Automation is running!")
+    _safe_print(f"  🎯  Hold  [{cfg.hotkey}]  to dictate")
+    _safe_print("  🛑  Press  Ctrl+C  to quit")
+    _safe_print("═" * 52)
+    _safe_print()
 
     try:
         service.wait_forever()
     except KeyboardInterrupt:
-        print("\n🛑 Shutting down…")
+        _safe_print("\n🛑 Shutting down…")
         service.stop()
     finally:
         service.stop()
-        print("👋 Goodbye!")
+        _safe_print("👋 Goodbye!")

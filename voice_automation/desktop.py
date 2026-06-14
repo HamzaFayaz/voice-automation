@@ -6,6 +6,7 @@ import contextlib
 import dataclasses
 import io
 import sys
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -106,6 +107,7 @@ class MainWindow(QMainWindow):
     stop_requested = Signal()
     config_saved = Signal(Config)
     download_requested = Signal(int)
+    test_requested = Signal(Config)
     check_requested = Signal()
 
     def __init__(self, config: Config) -> None:
@@ -219,16 +221,16 @@ class MainWindow(QMainWindow):
         header_row.addStretch(1)
         layout.addLayout(header_row)
 
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignRight)
+        self.form = QFormLayout()
+        self.form.setLabelAlignment(Qt.AlignRight)
 
         self.backend_combo = QComboBox()
         self.backend_combo.addItems(BACKENDS.keys())
         self.backend_combo.currentTextChanged.connect(self._sync_backend_visibility)
-        form.addRow("Backend", self.backend_combo)
+        self.form.addRow("Backend", self.backend_combo)
 
-        key_row = QWidget()
-        key_layout = QHBoxLayout(key_row)
+        self.deepgram_row = QWidget()
+        key_layout = QHBoxLayout(self.deepgram_row)
         key_layout.setContentsMargins(0, 0, 0, 0)
         self.deepgram_key = QLineEdit()
         self.deepgram_key.setEchoMode(QLineEdit.Password)
@@ -240,10 +242,10 @@ class MainWindow(QMainWindow):
         key_layout.addWidget(self.deepgram_key, 1)
         key_layout.addWidget(save_key_button)
         key_layout.addWidget(test_key_button)
-        form.addRow("Deepgram Key", key_row)
+        self.form.addRow("Deepgram Key", self.deepgram_row)
 
-        model_row = QWidget()
-        model_layout = QHBoxLayout(model_row)
+        self.model_row = QWidget()
+        model_layout = QHBoxLayout(self.model_row)
         model_layout.setContentsMargins(0, 0, 0, 0)
         self.model_combo = QComboBox()
         self.model_combo.addItems(MOONSHINE_MODELS.keys())
@@ -251,24 +253,24 @@ class MainWindow(QMainWindow):
         self._download_button.clicked.connect(self._request_download)
         model_layout.addWidget(self.model_combo, 1)
         model_layout.addWidget(self._download_button)
-        form.addRow("Moonshine Model", model_row)
+        self.form.addRow("Moonshine Model", self.model_row)
 
         self.hotkey_combo = QComboBox()
         self.hotkey_combo.addItems(HOTKEYS)
-        form.addRow("Hotkey", self.hotkey_combo)
+        self.form.addRow("Hotkey", self.hotkey_combo)
 
         self.sample_rate = QSpinBox()
         self.sample_rate.setRange(8000, 48000)
         self.sample_rate.setSingleStep(1000)
-        form.addRow("Sample Rate", self.sample_rate)
+        self.form.addRow("Sample Rate", self.sample_rate)
 
         self.max_record_seconds = QSpinBox()
         self.max_record_seconds.setRange(30, 1800)
         self.max_record_seconds.setSingleStep(30)
         self.max_record_seconds.setSuffix(" seconds")
-        form.addRow("Max Recording", self.max_record_seconds)
+        self.form.addRow("Max Recording", self.max_record_seconds)
 
-        layout.addLayout(form)
+        layout.addLayout(self.form)
 
         self._download_status = QLabel("")
         self._download_status.setWordWrap(True)
@@ -276,9 +278,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._download_status)
 
         action_row = QHBoxLayout()
+        test_backend_button = QPushButton("Test Backend")
+        test_backend_button.clicked.connect(self._request_backend_test)
         save_button = QPushButton("Save")
         save_button.clicked.connect(self._save_settings)
         action_row.addStretch(1)
+        action_row.addWidget(test_backend_button)
         action_row.addWidget(save_button)
         layout.addStretch(1)
         layout.addLayout(action_row)
@@ -344,8 +349,26 @@ class MainWindow(QMainWindow):
     def _request_download(self) -> None:
         self.download_requested.emit(MOONSHINE_MODELS[self.model_combo.currentText()])
 
+    def _request_backend_test(self) -> None:
+        config = self._current_config()
+        if config.model_provider == "deepgram" and self.deepgram_key.text().strip():
+            if not self._save_deepgram_key():
+                return
+        errors = validate_config(config, require_deepgram_key=config.model_provider == "deepgram")
+        if errors:
+            QMessageBox.warning(self, "Test Backend", "\n".join(errors))
+            return
+        QMessageBox.information(
+            self,
+            "Test Backend",
+            "After you click OK, say a short sentence. The app will record for 3 seconds.",
+        )
+        self.test_requested.emit(config)
+
     def _sync_backend_visibility(self) -> None:
         is_moonshine = BACKENDS[self.backend_combo.currentText()] == "moonshine"
+        self.form.setRowVisible(self.deepgram_row, not is_moonshine)
+        self.form.setRowVisible(self.model_row, is_moonshine)
         self.model_combo.setEnabled(is_moonshine)
         if self._download_button is not None:
             self._download_button.setEnabled(is_moonshine)
@@ -407,6 +430,7 @@ class DesktopApp(QObject):
         self.window.stop_requested.connect(self.stop_service)
         self.window.config_saved.connect(self.apply_config)
         self.window.download_requested.connect(self.download_model)
+        self.window.test_requested.connect(self.test_backend)
         self.window.check_requested.connect(self.check_environment)
         self.status_changed.connect(self._set_status)
 
@@ -465,6 +489,8 @@ class DesktopApp(QObject):
     @Slot(Config)
     def apply_config(self, config: Config) -> None:
         config.paste_mode = DESKTOP_PASTE_MODE
+        if config.model_provider == "deepgram" and not config.deepgram_api_key:
+            config.deepgram_api_key = get_deepgram_api_key()
         self.config = dataclasses.replace(config)
         if self.service.is_running:
             worker = FunctionWorker(lambda: self.service.restart(self.config))
@@ -486,6 +512,16 @@ class DesktopApp(QObject):
         worker = FunctionWorker(self._run_check)
         worker.signals.result.connect(self._show_check_result)
         worker.signals.error.connect(lambda message: QMessageBox.warning(self.window, "Check Environment", message))
+        self.thread_pool.start(worker)
+
+    @Slot(Config)
+    def test_backend(self, config: Config) -> None:
+        if config.model_provider == "deepgram" and not config.deepgram_api_key:
+            config.deepgram_api_key = get_deepgram_api_key()
+        self.window.statusBar().showMessage("Testing backend...", 3000)
+        worker = FunctionWorker(lambda: self._run_backend_test(config))
+        worker.signals.result.connect(self._show_backend_test_result)
+        worker.signals.error.connect(lambda message: QMessageBox.warning(self.window, "Test Backend", message))
         self.thread_pool.start(worker)
 
     def quit(self) -> None:
@@ -546,6 +582,47 @@ class DesktopApp(QObject):
 
     def _show_check_result(self, output: str) -> None:
         QMessageBox.information(self.window, "Check Environment", output)
+
+    @staticmethod
+    def _run_backend_test(config: Config) -> str:
+        from voice_automation.audio import AudioCapture
+        from voice_automation.stt import create_stt_adapter
+
+        audio = AudioCapture(
+            sample_rate=config.sample_rate,
+            chunk_ms=config.chunk_ms,
+            max_record_seconds=5,
+        )
+        audio.start_recording()
+        time.sleep(3)
+        samples = audio.stop_recording()
+        if len(samples) == 0:
+            return "No audio was captured."
+
+        if config.model_provider == "deepgram":
+            adapter = create_stt_adapter(
+                "deepgram",
+                api_key=config.deepgram_api_key,
+                sample_rate=config.sample_rate,
+            )
+        elif config.model_provider == "moonshine":
+            adapter = create_stt_adapter("moonshine", model_arch=config.model_arch)
+        else:
+            adapter = create_stt_adapter(config.model_provider, model_size=config.model_size)
+
+        try:
+            if not adapter.load_model():
+                return "Backend did not load. Check settings and dependencies."
+            transcript = adapter.transcribe(samples, config.sample_rate)
+        finally:
+            adapter.unload()
+
+        if transcript:
+            return f"Transcript:\n\n{transcript}"
+        return "Audio captured, but no transcript was returned."
+
+    def _show_backend_test_result(self, output: str) -> None:
+        QMessageBox.information(self.window, "Test Backend", output)
 
 
 def main() -> int:

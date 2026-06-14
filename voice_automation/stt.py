@@ -347,7 +347,12 @@ class FasterWhisperSttAdapter(SttAdapter):
 class DeepgramSttAdapter(SttAdapter):
     """STT adapter backed by the Deepgram REST/WebSocket API."""
 
-    def __init__(self, api_key: str = "", model: str = "nova-3") -> None:
+    def __init__(
+        self,
+        api_key: str = "",
+        model: str = "nova-3",
+        sample_rate: int = 16000,
+    ) -> None:
         self._api_key = api_key
         self._model = model
         self._loaded = False
@@ -360,7 +365,7 @@ class DeepgramSttAdapter(SttAdapter):
         self._thread = None
         self._stream_result = ""
         self._stream_error = None
-        self._sample_rate = 8000
+        self._sample_rate = sample_rate
 
     def set_state_manager(self, state_manager: Any) -> None:
         self._state_manager = state_manager
@@ -436,10 +441,6 @@ class DeepgramSttAdapter(SttAdapter):
         import queue
         import asyncio
         import threading
-        from voice_automation.config import load_config
-
-        cfg = load_config()
-        self._sample_rate = cfg.sample_rate
 
         self._queue = queue.Queue()
         self._stream_result = ""
