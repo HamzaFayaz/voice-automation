@@ -481,13 +481,17 @@ class DeepgramSttAdapter(SttAdapter):
         }
 
         transcript_parts = []
+        queue_ref = self._queue
+        loop_ref = self._loop
 
         try:
             async with websockets.connect(url, additional_headers=headers) as ws:
                 async def sender():
                     while True:
+                        if loop_ref is None or queue_ref is None:
+                            break
                         # Get chunk from the synchronous queue using executor
-                        chunk = await self._loop.run_in_executor(None, self._queue.get)
+                        chunk = await loop_ref.run_in_executor(None, queue_ref.get)
                         if chunk is None:
                             # Send close stream message
                             await ws.send(json.dumps({"type": "CloseStream"}))
