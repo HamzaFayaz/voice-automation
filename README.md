@@ -64,7 +64,7 @@ The engine is profiled to run on CPU-only hosts alongside CPU-heavy IDEs (such a
 | **Deepgram API** | *N/A (Cloud)* | Cloud Streaming | < 0.1 | High-accuracy technical prompt dictation (requires network) |
 | **Moonshine Tiny** | 26M | Local CPU | ~0.15 | Ultra-fast short commands, lowest CPU footprint |
 | **Moonshine Small** | 123M | Local CPU | ~0.35 | Normal conversational typing with balanced latency |
-| **Moonshine Medium** | 245M | Local CPU | ~0.60 | High-accuracy local typing, Urdu/Hindi translation |
+| **Moonshine Medium** | 245M | Local CPU | ~0.60 | High-accuracy local typing |
 
 
 ## System Design
@@ -101,7 +101,7 @@ graph TD
 
 ### Deepgram API Mode
 
-Deepgram is the current default mode in this project because it provides stronger transcription accuracy for real usage. This is useful when dictating technical language, prompts, commands, or longer natural speech.
+Deepgram is the recommended cloud mode in this project because it provides stronger transcription accuracy for real usage. This is useful when dictating technical language, prompts, commands, or longer natural speech.
 
 Deepgram also provides generous free credits, which makes it practical for personal productivity automation.
 
@@ -404,7 +404,7 @@ voice_automation/
 +-- service.py         Engine daemon lifecycle manager
 +-- audio.py           Microphone recording
 +-- hotkey.py          Global push-to-talk listener
-+-- stt.py             Deepgram, Moonshine, and faster-whisper adapters
++-- stt.py             Deepgram and Moonshine adapters
 +-- paste.py           Clipboard/direct text insertion
 +-- cleanup.py         Transcript cleanup
 +-- state.py           Thread-safe app state
