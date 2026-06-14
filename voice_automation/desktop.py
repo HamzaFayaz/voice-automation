@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import io
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -605,7 +606,7 @@ class DesktopApp(QObject):
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             passed = run_checks()
-        result = buffer.getvalue().strip()
+        result = _strip_ansi(buffer.getvalue()).strip()
         return result if passed else result + "\n\nOne or more checks failed."
 
     def _show_check_result(self, output: str) -> None:
@@ -651,6 +652,11 @@ class DesktopApp(QObject):
 
     def _show_backend_test_result(self, output: str) -> None:
         QMessageBox.information(self.window, "Test Backend", output)
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove terminal color/control sequences before showing text in Qt."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def main() -> int:
