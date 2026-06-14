@@ -296,6 +296,11 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
 
+    def set_controls_busy(self, busy: bool) -> None:
+        if busy:
+            self.start_button.setEnabled(False)
+            self.stop_button.setEnabled(False)
+
     def set_download_busy(self, busy: bool) -> None:
         if self._download_button is not None:
             self._download_button.setEnabled(not busy)
@@ -673,6 +678,7 @@ class DesktopApp(QObject):
         self.download_worker: ModelDownloadWorker | None = None
         self._download_minimized = False
         self._active_download_arch: int | None = None
+        self._service_busy = False
 
         icon = self._build_icon()
         self.app.setWindowIcon(icon)
@@ -728,15 +734,23 @@ class DesktopApp(QObject):
         return menu
 
     def start_service(self) -> None:
-        if self.service.is_running:
+        if self.service.is_running or self._service_busy:
             return
+        self._service_busy = True
         self.status_changed.emit("starting")
         worker = FunctionWorker(self.service.start)
         worker.signals.error.connect(lambda message: self.status_changed.emit(f"error: {message}"))
+        worker.signals.finished.connect(self._service_action_finished)
         self.thread_pool.start(worker)
 
     def stop_service(self) -> None:
+        if self._service_busy:
+            return
+        self._service_busy = True
+        self.status_changed.emit("stopping")
         worker = FunctionWorker(self.service.stop)
+        worker.signals.error.connect(lambda message: self.status_changed.emit(f"error: {message}"))
+        worker.signals.finished.connect(self._service_action_finished)
         self.thread_pool.start(worker)
 
     @Slot(Config)
@@ -746,8 +760,18 @@ class DesktopApp(QObject):
             config.deepgram_api_key = get_deepgram_api_key()
         self.config = dataclasses.replace(config)
         if self.service.is_running:
+            if self._service_busy:
+                QMessageBox.warning(
+                    self.window,
+                    "Settings",
+                    "Wait for the current start or stop operation to finish before applying settings.",
+                )
+                return
+            self._service_busy = True
+            self.status_changed.emit("restarting")
             worker = FunctionWorker(lambda: self.service.restart(self.config))
             worker.signals.error.connect(lambda message: self.status_changed.emit(f"error: {message}"))
+            worker.signals.finished.connect(self._service_action_finished)
             self.thread_pool.start(worker)
         else:
             self.service.config = self.config
@@ -854,6 +878,13 @@ class DesktopApp(QObject):
 
     @Slot(Config)
     def test_backend(self, config: Config) -> None:
+        if self.service.is_running or self._service_busy:
+            QMessageBox.warning(
+                self.window,
+                "Test Backend",
+                "Stop dictation before testing a backend. The test needs exclusive microphone access.",
+            )
+            return
         if config.model_provider == "deepgram" and not config.deepgram_api_key:
             config.deepgram_api_key = get_deepgram_api_key()
         self.window.statusBar().showMessage("Testing backend...", 3000)
@@ -871,9 +902,17 @@ class DesktopApp(QObject):
         self.window.set_status(status)
         self.tray.setToolTip(f"Voice Automation - {status}")
         running = self.service.is_running
-        self.start_action.setEnabled(not running)
-        self.stop_action.setEnabled(running)
+        self.start_action.setEnabled(not running and not self._service_busy)
+        self.stop_action.setEnabled(running and not self._service_busy)
         self.window.set_running(running)
+        self.window.set_controls_busy(self._service_busy)
+
+    def _service_action_finished(self) -> None:
+        self._service_busy = False
+        if self.service.last_error and not self.service.is_running:
+            self._set_status(f"error: {self.service.last_error}")
+            return
+        self._set_status("running" if self.service.is_running else "stopped")
 
     def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.DoubleClick:
@@ -916,10 +955,11 @@ class DesktopApp(QObject):
     @staticmethod
     def _run_check() -> str:
         from voice_automation.check import run_checks
+        from voice_automation.config import load_config
 
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
-            passed = run_checks()
+            passed = run_checks(load_config(use_app_data=True))
         result = _strip_ansi(buffer.getvalue()).strip()
         return result if passed else result + "\n\nOne or more checks failed."
 

@@ -38,7 +38,7 @@ def _safe_print(*args: Any, **kwargs: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Model loading with automatic fallback
+# Model loading
 # ---------------------------------------------------------------------------
 
 def _get_adapter_kwargs(provider: str, cfg: Config) -> dict:
@@ -56,46 +56,23 @@ def _get_adapter_kwargs(provider: str, cfg: Config) -> dict:
 
 
 def _load_model(cfg: Config) -> SttAdapter:
-    """Create and load an STT model, falling back if the primary fails.
+    """Create and load the configured STT model."""
+    provider = cfg.model_provider
 
-    Attempts the provider specified in *cfg.model_provider* first.  If that
-    fails, falls back to the alternative backend so the user can still
-    dictate even if the preferred engine is unavailable.
-
-    Raises
-    ------
-    RuntimeError
-        If **no** backend could be loaded.
-    """
-    primary = cfg.model_provider
-    fallback = "deepgram" if primary == "moonshine" else "moonshine"
-
-    # ── primary attempt ───────────────────────────────────────────────
-    logger.info("Loading STT model: provider=%s …", primary)
+    logger.info("Loading STT model: provider=%s ...", provider)
     try:
-        kwargs = _get_adapter_kwargs(primary, cfg)
-        adapter = create_stt_adapter(primary, **kwargs)
+        kwargs = _get_adapter_kwargs(provider, cfg)
+        adapter = create_stt_adapter(provider, **kwargs)
         if adapter.load_model():
-            logger.info("STT model ready (%s)", primary)
+            logger.info("STT model ready (%s)", provider)
             return adapter
-        logger.warning("Primary STT provider (%s) failed to load", primary)
+        logger.warning("Configured STT provider (%s) failed to load", provider)
     except Exception:
-        logger.exception("Error creating primary STT adapter (%s)", primary)
-
-    # ── fallback attempt ──────────────────────────────────────────────
-    logger.info("Trying fallback STT provider: %s …", fallback)
-    try:
-        kwargs = _get_adapter_kwargs(fallback, cfg)
-        adapter = create_stt_adapter(fallback, **kwargs)
-        if adapter.load_model():
-            logger.info("Fallback STT model ready (%s)", fallback)
-            return adapter
-    except Exception:
-        logger.exception("Error creating fallback STT adapter (%s)", fallback)
+        logger.exception("Error creating STT adapter (%s)", provider)
 
     raise RuntimeError(
-        "Could not load any STT model. Run 'voice-automation check' to "
-        "diagnose the problem."
+        f"Could not load the configured STT backend ({provider}). "
+        "Run the desktop environment check or update Settings."
     )
 
 
