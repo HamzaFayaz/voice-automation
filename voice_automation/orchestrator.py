@@ -316,78 +316,21 @@ class _Orchestrator:
 # ---------------------------------------------------------------------------
 
 def run() -> None:
-    """Start the voice-automation orchestrator.
-
-    This is the top-level function invoked by ``__main__.py``.  It sets up
-    all components, prints a status banner, then enters a blocking loop
-    that keeps the process alive until interrupted by Ctrl+C.
-    """
-    # 1 ── Configuration & logging ─────────────────────────────────────
+    """Start the voice-automation service and block until interrupted."""
     cfg = load_config()
     setup_logging()
 
-    logger.info("Voice Automation starting up")
-    logger.info(
-        "Config: hotkey=%s  provider=%s  paste=%s  language=%s",
-        cfg.hotkey,
-        cfg.model_provider,
-        cfg.paste_mode,
-        cfg.language,
-    )
+    from voice_automation.service import VoiceAutomationService
 
-    # 2 ── Core components ─────────────────────────────────────────────
-    state = StateManager()
-
-    audio = AudioCapture(
-        sample_rate=cfg.sample_rate,
-        chunk_ms=cfg.chunk_ms,
-        max_record_seconds=cfg.max_record_seconds,
-    )
-
-    inserter = TextInserter(
-        paste_mode=cfg.paste_mode,
-        clipboard_restore_delay=cfg.clipboard_restore_delay,
-    )
-
-    # 3 ── STT model (with fallback) ───────────────────────────────────
+    service = VoiceAutomationService(cfg)
     try:
-        stt = _load_model(cfg)
-        stt.set_state_manager(state)
+        service.start()
     except RuntimeError as exc:
         logger.critical("%s", exc)
-        print(f"\n❌ {exc}")
-        print("   Install a model backend and try again.\n")
+        print(f"\nError: {exc}")
+        print("Install/configure a model backend and try again.\n")
         return
 
-    # 4 ── Orchestrator + hotkey ────────────────────────────────────────
-    orch = _Orchestrator(cfg, state, audio, stt, inserter)
-
-    try:
-        hotkey = HotkeyController(
-            hotkey_name=cfg.hotkey,
-            on_press=orch.on_press,
-            on_release=orch.on_release,
-        )
-    except (RuntimeError, ValueError) as exc:
-        logger.critical("Cannot create hotkey controller: %s", exc)
-        print(f"\n❌ {exc}\n")
-        stt.unload()
-        return
-
-    hotkey.start()
-
-    # ── Dictation Overlay HUD ─────────────────────────────────────────
-    overlay = None
-    try:
-        from voice_automation.overlay import DictationOverlay
-
-        overlay = DictationOverlay(state, audio)
-        overlay.start()
-        logger.info("Dictation overlay HUD started")
-    except Exception as exc:
-        logger.warning("Could not start dictation overlay HUD: %s", exc)
-
-    # 5 ── Ready banner ────────────────────────────────────────────────
     print()
     print("═" * 52)
     print("  ✅  Voice Automation is running!")
@@ -396,36 +339,11 @@ def run() -> None:
     print("═" * 52)
     print()
 
-    # 6 ── Main loop (keep alive) ──────────────────────────────────────
     try:
-        while True:
-            time.sleep(0.5)
+        service.wait_forever()
     except KeyboardInterrupt:
         print("\n🛑 Shutting down…")
-        logger.info("KeyboardInterrupt received – shutting down")
+        service.stop()
     finally:
-        # ── Graceful teardown ─────────────────────────────────────────
-        if overlay:
-            try:
-                overlay.stop()
-                logger.info("Dictation overlay HUD stopped")
-            except Exception:
-                logger.exception("Error stopping dictation overlay HUD")
-
-        hotkey.stop()
-        logger.info("Hotkey listener stopped")
-
-        # If a recording is in progress, stop it cleanly.
-        if audio.is_recording:
-            try:
-                audio.stop_recording()
-                logger.info("In-progress recording stopped")
-            except Exception:
-                logger.exception("Error stopping active recording")
-
-        stt.unload()
-        logger.info("STT model unloaded")
-
-        state.reset()
-        logger.info("Voice Automation shut down cleanly")
+        service.stop()
         print("👋 Goodbye!")
