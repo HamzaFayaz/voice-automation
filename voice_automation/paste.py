@@ -207,7 +207,7 @@ class TextInserter:
             return False
 
     def _type_directly(self, text: str) -> bool:
-        """Insert *text* by typing each character individually."""
+        """Insert *text* by sending direct keyboard input."""
         try:
             from pynput.keyboard import Controller
         except ImportError:
@@ -219,11 +219,7 @@ class TextInserter:
         keyboard = Controller()
 
         try:
-            for char in text:
-                keyboard.type(char)
-                # Small inter-character delay for reliability in slower apps.
-                time.sleep(0.012)
-
+            keyboard.type(text)
             logger.debug("Text inserted via direct typing (%d chars)", len(text))
             return True
 

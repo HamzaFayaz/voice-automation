@@ -86,30 +86,26 @@ def _check_moonshine() -> bool:
         return False
 
 
-def _check_model_files() -> bool:
-    """Check whether model files are present (provider-specific)."""
+def _check_model_files(cfg) -> bool:
+    """Check whether the configured Moonshine model files are present."""
     _header("Model files")
     try:
-        import moonshine_voice  # noqa: WPS433
+        from voice_automation.downloader import is_moonshine_model_downloaded
 
-        models_dir = getattr(moonshine_voice, "MODELS_DIR", None)
-        if models_dir is None:
-            print(f"{_WARN}  Cannot determine models directory – skipping")
-            return True  # non-fatal
-
-        from pathlib import Path
-
-        path = Path(models_dir)
-        if path.exists() and any(path.iterdir()):
-            print(f"{_PASS}  Model files found in {path}")
+        installed, message = is_moonshine_model_downloaded(
+            cfg.model_arch,
+            cfg.get_moonshine_cache_dir(),
+        )
+        if installed:
+            print(f"{_PASS}  {message}")
             return True
 
-        print(f"{_FAIL}  No model files in {path}")
-        print("       Run: voice-automation download-model")
+        print(f"{_FAIL}  {message}")
+        print("       Download the selected Moonshine model from Settings.")
         return False
     except Exception as exc:
         print(f"{_WARN}  Could not verify model files: {exc}")
-        return True  # non-fatal if moonshine itself failed earlier
+        return True
 
 
 def _check_deepgram(cfg) -> bool:
@@ -126,22 +122,10 @@ def _check_deepgram(cfg) -> bool:
         return False
 
 
-def _check_faster_whisper() -> bool:
-    """Import faster_whisper."""
-    _header("faster_whisper")
-    try:
-        import faster_whisper as _
-        print(f"{_PASS}  faster-whisper imported")
-        return True
-    except Exception as exc:
-        print(f"{_FAIL}  {exc}")
-        return False
-
-
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
-def run_checks() -> bool:
+def run_checks(cfg=None) -> bool:
     """Execute all environment checks and print a coloured report.
 
     Returns
@@ -152,8 +136,10 @@ def run_checks() -> bool:
     print(f"\n{_BOLD}Voice Automation – Environment Check{_RESET}")
     print("=" * 42)
 
-    from voice_automation.config import load_config
-    cfg = load_config()
+    if cfg is None:
+        from voice_automation.config import load_config
+
+        cfg = load_config()
 
     results: list[bool] = [
         _check_python_version(),
@@ -165,11 +151,9 @@ def run_checks() -> bool:
     provider = cfg.model_provider
     if provider == "deepgram":
         results.append(_check_deepgram(cfg))
-    elif provider == "faster-whisper":
-        results.append(_check_faster_whisper())
-    else:  # default to moonshine
+    else:  # moonshine
         results.append(_check_moonshine())
-        results.append(_check_model_files())
+        results.append(_check_model_files(cfg))
 
     all_passed = all(results)
     passed_count = sum(results)

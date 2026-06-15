@@ -11,6 +11,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from typing import Any
+
+import numpy as np
 
 from voice_automation.audio import AudioCapture
 from voice_automation.cleanup import clean_transcript
@@ -24,61 +27,52 @@ from voice_automation.stt import SttAdapter, create_stt_adapter
 logger = logging.getLogger(__name__)
 
 
+def _safe_print(*args: Any, **kwargs: Any) -> None:
+    """Print without letting console encoding errors break the engine."""
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        text = " ".join(str(arg) for arg in args)
+        safe_text = text.encode("ascii", errors="replace").decode("ascii")
+        print(safe_text, **kwargs)
+
+
 # ---------------------------------------------------------------------------
-# Model loading with automatic fallback
+# Model loading
 # ---------------------------------------------------------------------------
 
 def _get_adapter_kwargs(provider: str, cfg: Config) -> dict:
     """Return constructor arguments for the specified provider."""
     if provider == "moonshine":
-        return {"model_arch": cfg.model_arch}
+        return {
+            "model_arch": cfg.model_arch,
+            "sample_rate": cfg.sample_rate,
+            "cache_dir": cfg.get_moonshine_cache_dir(),
+        }
     elif provider == "deepgram":
-        return {"api_key": cfg.deepgram_api_key}
+        return {"api_key": cfg.deepgram_api_key, "sample_rate": cfg.sample_rate}
     else:
-        return {"model_size": cfg.model_size, "compute_type": "int8"}
+        raise ValueError(f"Unknown provider: {provider!r}")
 
 
 def _load_model(cfg: Config) -> SttAdapter:
-    """Create and load an STT model, falling back if the primary fails.
+    """Create and load the configured STT model."""
+    provider = cfg.model_provider
 
-    Attempts the provider specified in *cfg.model_provider* first.  If that
-    fails, falls back to the alternative backend so the user can still
-    dictate even if the preferred engine is unavailable.
-
-    Raises
-    ------
-    RuntimeError
-        If **no** backend could be loaded.
-    """
-    primary = cfg.model_provider
-    fallback = "faster-whisper" if primary == "moonshine" else "moonshine"
-
-    # ── primary attempt ───────────────────────────────────────────────
-    logger.info("Loading STT model: provider=%s …", primary)
+    logger.info("Loading STT model: provider=%s ...", provider)
     try:
-        kwargs = _get_adapter_kwargs(primary, cfg)
-        adapter = create_stt_adapter(primary, **kwargs)
+        kwargs = _get_adapter_kwargs(provider, cfg)
+        adapter = create_stt_adapter(provider, **kwargs)
         if adapter.load_model():
-            logger.info("STT model ready (%s)", primary)
+            logger.info("STT model ready (%s)", provider)
             return adapter
-        logger.warning("Primary STT provider (%s) failed to load", primary)
+        logger.warning("Configured STT provider (%s) failed to load", provider)
     except Exception:
-        logger.exception("Error creating primary STT adapter (%s)", primary)
-
-    # ── fallback attempt ──────────────────────────────────────────────
-    logger.info("Trying fallback STT provider: %s …", fallback)
-    try:
-        kwargs = _get_adapter_kwargs(fallback, cfg)
-        adapter = create_stt_adapter(fallback, **kwargs)
-        if adapter.load_model():
-            logger.info("Fallback STT model ready (%s)", fallback)
-            return adapter
-    except Exception:
-        logger.exception("Error creating fallback STT adapter (%s)", fallback)
+        logger.exception("Error creating STT adapter (%s)", provider)
 
     raise RuntimeError(
-        "Could not load any STT model. Run 'voice-automation check' to "
-        "diagnose the problem."
+        f"Could not load the configured STT backend ({provider}). "
+        "Run the desktop environment check or update Settings."
     )
 
 
@@ -169,7 +163,6 @@ class _Orchestrator:
             # Play start sound cue
             play_sound_cue("start", self.cfg)
 
-            # Start background streaming feed thread
             self._streaming_thread = threading.Thread(
                 target=self._feed_streaming_audio,
                 daemon=True,
@@ -177,11 +170,11 @@ class _Orchestrator:
             )
             self._streaming_thread.start()
 
-            print("🎤 Recording…")
+            _safe_print("🎤 Recording…")
             logger.info("Recording started")
         except Exception:
             logger.exception("Failed to start recording")
-            print("❌ Could not start recording – see log")
+            _safe_print("❌ Could not start recording – see log")
             self.state.set_state(AppState.IDLE)
 
     def _feed_streaming_audio(self) -> None:
@@ -205,10 +198,10 @@ class _Orchestrator:
 
         # Stop recording synchronously (fast) to free the mic immediately.
         try:
-            self.audio.stop_recording()
+            captured_audio = self.audio.stop_recording()
         except Exception:
             logger.exception("Failed to stop recording")
-            print("❌ Could not stop recording – see log")
+            _safe_print("❌ Could not stop recording – see log")
             self.state.set_state(AppState.IDLE)
             return
 
@@ -217,13 +210,17 @@ class _Orchestrator:
         # Offload the finalization to a background worker thread.
         worker = threading.Thread(
             target=self._run_finalize_pipeline,
-            args=(duration_s,),
+            args=(duration_s, captured_audio),
             daemon=True,
             name="voice-pipeline-finalize",
         )
         worker.start()
 
-    def _run_finalize_pipeline(self, duration_s: float) -> None:
+    def _run_finalize_pipeline(
+        self,
+        duration_s: float,
+        captured_audio: np.ndarray | None = None,
+    ) -> None:
         try:
             # Wait for streaming thread to finish feeding remaining chunks
             if self._streaming_thread is not None:
@@ -232,7 +229,7 @@ class _Orchestrator:
 
             # ── Guard: too-short audio ────────────────────────────
             if duration_s < self.cfg.min_record_seconds:
-                print("⚠️  Recording too short (%.2fs) – skipped" % duration_s)
+                _safe_print("⚠️  Recording too short (%.2fs) – skipped" % duration_s)
                 logger.info(
                     "Recording too short (%.2f s < %.2f s) – skipping",
                     duration_s,
@@ -244,13 +241,13 @@ class _Orchestrator:
             # ── Guard: model not loaded ───────────────────────────────────
             if not self.stt.is_loaded():
                 logger.error("STT model is not loaded – cannot transcribe")
-                print("❌ STT model not loaded")
+                _safe_print("❌ STT model not loaded")
                 self.stt.end_stream()
                 return
 
             # ── Finalize Transcription ────────────────────────────────────
             self.state.set_state(AppState.TRANSCRIBING)
-            print("⏳ Transcribing…")
+            _safe_print("⏳ Transcribing…")
             logger.debug(
                 "Finalizing stream transcription for %.2f s of audio",
                 duration_s,
@@ -258,13 +255,21 @@ class _Orchestrator:
 
             t_start_trans = time.monotonic()
             raw_text = self.stt.end_stream()
+            if (
+                self.cfg.model_provider == "deepgram"
+                and not raw_text
+                and captured_audio is not None
+                and len(captured_audio) > 0
+            ):
+                logger.info("Deepgram stream returned empty; retrying with batch audio")
+                raw_text = self.stt.transcribe(captured_audio, self.cfg.sample_rate)
             t_end_trans = time.monotonic()
 
             transcribe_ms = int((t_end_trans - t_start_trans) * 1000)
             self.state.transcribe_time_ms = transcribe_ms
 
             if not raw_text or not raw_text.strip():
-                print("⚠️  No speech detected")
+                _safe_print("⚠️  No speech detected")
                 logger.info("Transcription returned empty text")
                 return
 
@@ -275,7 +280,7 @@ class _Orchestrator:
                 replacements=self.cfg.replacements
             )
             if not text:
-                print("⚠️  No speech detected")
+                _safe_print("⚠️  No speech detected")
                 logger.info("Cleaned transcript is empty")
                 return
 
@@ -294,17 +299,17 @@ class _Orchestrator:
 
             if ok:
                 # Strip trailing whitespace only for the display message
-                print(f"✅ Pasted: {text.rstrip()}")
+                _safe_print(f"✅ Pasted: {text.rstrip()}")
                 logger.info("Inserted text: %r", text.rstrip())
             else:
-                print("⚠️  Paste failed – see log for details")
+                _safe_print("⚠️  Paste failed – see log for details")
                 logger.warning("TextInserter.insert_text returned False")
                 # Play error sound
                 play_sound_cue("error", self.cfg)
 
         except Exception:
             logger.exception("Unhandled error in transcription pipeline")
-            print("❌ Error during transcription – see log")
+            _safe_print("❌ Error during transcription – see log")
             # Play error sound
             play_sound_cue("error", self.cfg)
         finally:
@@ -316,116 +321,34 @@ class _Orchestrator:
 # ---------------------------------------------------------------------------
 
 def run() -> None:
-    """Start the voice-automation orchestrator.
-
-    This is the top-level function invoked by ``__main__.py``.  It sets up
-    all components, prints a status banner, then enters a blocking loop
-    that keeps the process alive until interrupted by Ctrl+C.
-    """
-    # 1 ── Configuration & logging ─────────────────────────────────────
+    """Start the voice-automation service and block until interrupted."""
     cfg = load_config()
     setup_logging()
 
-    logger.info("Voice Automation starting up")
-    logger.info(
-        "Config: hotkey=%s  provider=%s  paste=%s  language=%s",
-        cfg.hotkey,
-        cfg.model_provider,
-        cfg.paste_mode,
-        cfg.language,
-    )
+    from voice_automation.service import VoiceAutomationService
 
-    # 2 ── Core components ─────────────────────────────────────────────
-    state = StateManager()
-
-    audio = AudioCapture(
-        sample_rate=cfg.sample_rate,
-        chunk_ms=cfg.chunk_ms,
-        max_record_seconds=cfg.max_record_seconds,
-    )
-
-    inserter = TextInserter(
-        paste_mode=cfg.paste_mode,
-        clipboard_restore_delay=cfg.clipboard_restore_delay,
-    )
-
-    # 3 ── STT model (with fallback) ───────────────────────────────────
+    service = VoiceAutomationService(cfg)
     try:
-        stt = _load_model(cfg)
-        stt.set_state_manager(state)
+        service.start()
     except RuntimeError as exc:
         logger.critical("%s", exc)
-        print(f"\n❌ {exc}")
-        print("   Install a model backend and try again.\n")
+        _safe_print(f"\nError: {exc}")
+        _safe_print("Install/configure a model backend and try again.\n")
         return
 
-    # 4 ── Orchestrator + hotkey ────────────────────────────────────────
-    orch = _Orchestrator(cfg, state, audio, stt, inserter)
+    _safe_print()
+    _safe_print("═" * 52)
+    _safe_print("  ✅  Voice Automation is running!")
+    _safe_print(f"  🎯  Hold  [{cfg.hotkey}]  to dictate")
+    _safe_print("  🛑  Press  Ctrl+C  to quit")
+    _safe_print("═" * 52)
+    _safe_print()
 
     try:
-        hotkey = HotkeyController(
-            hotkey_name=cfg.hotkey,
-            on_press=orch.on_press,
-            on_release=orch.on_release,
-        )
-    except (RuntimeError, ValueError) as exc:
-        logger.critical("Cannot create hotkey controller: %s", exc)
-        print(f"\n❌ {exc}\n")
-        stt.unload()
-        return
-
-    hotkey.start()
-
-    # ── Dictation Overlay HUD ─────────────────────────────────────────
-    overlay = None
-    try:
-        from voice_automation.overlay import DictationOverlay
-
-        overlay = DictationOverlay(state, audio)
-        overlay.start()
-        logger.info("Dictation overlay HUD started")
-    except Exception as exc:
-        logger.warning("Could not start dictation overlay HUD: %s", exc)
-
-    # 5 ── Ready banner ────────────────────────────────────────────────
-    print()
-    print("═" * 52)
-    print("  ✅  Voice Automation is running!")
-    print(f"  🎯  Hold  [{cfg.hotkey}]  to dictate")
-    print("  🛑  Press  Ctrl+C  to quit")
-    print("═" * 52)
-    print()
-
-    # 6 ── Main loop (keep alive) ──────────────────────────────────────
-    try:
-        while True:
-            time.sleep(0.5)
+        service.wait_forever()
     except KeyboardInterrupt:
-        print("\n🛑 Shutting down…")
-        logger.info("KeyboardInterrupt received – shutting down")
+        _safe_print("\n🛑 Shutting down…")
+        service.stop()
     finally:
-        # ── Graceful teardown ─────────────────────────────────────────
-        if overlay:
-            try:
-                overlay.stop()
-                logger.info("Dictation overlay HUD stopped")
-            except Exception:
-                logger.exception("Error stopping dictation overlay HUD")
-
-        hotkey.stop()
-        logger.info("Hotkey listener stopped")
-
-        # If a recording is in progress, stop it cleanly.
-        if audio.is_recording:
-            try:
-                audio.stop_recording()
-                logger.info("In-progress recording stopped")
-            except Exception:
-                logger.exception("Error stopping active recording")
-
-        stt.unload()
-        logger.info("STT model unloaded")
-
-        state.reset()
-        logger.info("Voice Automation shut down cleanly")
-        print("👋 Goodbye!")
+        service.stop()
+        _safe_print("👋 Goodbye!")

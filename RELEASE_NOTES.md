@@ -1,5 +1,32 @@
 # Release Notes
 
+## Unreleased - Desktop App Branch
+
+This branch adds the V1 desktop app path for Voice Automation. The desktop app is Windows-first and tray-first, with a focused Home screen for normal use and a Settings screen for configuration.
+
+### Desktop App
+
+- Added a PySide6 desktop entrypoint for running from source with `python -m voice_automation.desktop`.
+- Added the `voice-automation-desktop` console script path for installed environments.
+- Added a tray workflow with Start Dictation, Stop Dictation, Settings, Check Environment, and Quit.
+- Added a Home screen with Start and Stop controls for the primary dictation workflow.
+- Added a Settings screen for switching between Deepgram API and Moonshine Local backends.
+- Added keyring-backed Deepgram API key storage for desktop settings, keeping the key out of JSON config files.
+- Added Moonshine model selection in the desktop UI, including Tiny, Base, Tiny Streaming, Base Streaming, Small Streaming, and Medium Streaming.
+- Added a UI-driven Moonshine model download flow so local models can be installed without using the CLI.
+- Added desktop settings for hotkey and maximum recording seconds.
+- Set the desktop workflow around direct typing mode by default and removed the paste-mode selector from the desktop UI.
+- Added PyInstaller packaging support for a Windows one-folder desktop build.
+
+### Usage Notes
+
+- Run from source with `python -m voice_automation.desktop`.
+- Run the installed console script with `voice-automation-desktop`.
+- Build the executable with `pyinstaller voice_automation_desktop.spec` or the provided desktop build script.
+- Deepgram remains the recommended accuracy-focused backend.
+- Moonshine Medium Streaming `model_arch: 5` remains the recommended local backend option.
+- The recommended/default desktop safety limit for one recording is `300` seconds. Push-to-talk still normally stops when the hotkey is released.
+
 ## v0.1.0 - Initial Public Release
 
 Voice Automation v0.1.0 is the first public release of the Windows push-to-talk dictation and productivity automation tool.
